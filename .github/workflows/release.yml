@@ -1,0 +1,61 @@
+name: Release
+
+# Push a tag like v0.6 → builds a universal NirTab.app, signs it with the project's self-signed cert
+# (so permissions survive in-app updates) and publishes NirTab-<version>.zip as a GitHub release.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, e.g. 0.6 (creates tag v0.6)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        id: v
+        run: |
+          V="${{ github.event.inputs.version }}"
+          [ -z "$V" ] && V="${GITHUB_REF_NAME#v}"
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+
+      - name: Import signing cert
+        env:
+          CERT_P12: ${{ secrets.SIGNING_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.SIGNING_CERT_PASSWORD }}
+        run: |
+          [ -z "$CERT_P12" ] && { echo "::warning::SIGNING_CERT_P12 not set — building ad-hoc (permissions reset on update)"; exit 0; }
+          KC="$RUNNER_TEMP/signing.keychain-db"
+          security create-keychain -p ci "$KC"
+          security set-keychain-settings "$KC"
+          security unlock-keychain -p ci "$KC"
+          echo "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KC" -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k ci "$KC" >/dev/null
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/cert.p12"
+
+      - name: Build
+        run: VERSION=${{ steps.v.outputs.version }} ./build.sh --release
+
+      - name: Smoke test
+        run: |
+          codesign --verify --verbose NirTab.app
+          lipo -archs NirTab.app/Contents/MacOS/NirTab
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" NirTab.app/Contents/Info.plist
+          ! /usr/libexec/PlistBuddy -c "Print :NirTabSourceDir" NirTab.app/Contents/Info.plist 2>/dev/null
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          V=${{ steps.v.outputs.version }}
+          gh release create "v$V" "NirTab-$V.zip" --title "NirTab $V" --generate-notes --target "$GITHUB_SHA"
