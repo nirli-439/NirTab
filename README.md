@@ -9,8 +9,15 @@ open window. Each one shows a live preview. Release ⌘ to jump to the selected 
 1. Download `NirTab-<version>.zip` from [Releases](https://github.com/nirli-439/NirTab/releases), unzip it, and move
    `NirTab.app` to `/Applications`.
 2. The first time, right-click → **Open**. The app is self-signed, not notarized, so Gatekeeper asks once.
-3. Grant **Accessibility** (required) and **Screen Recording** (for previews) when asked. NirTab picks the grants up
-   by itself, so you don't need to restart it.
+3. The **Setup checklist** opens and stays until everything works. It has a green check or a fix button for each of:
+   - Accessibility
+   - Screen Recording
+   - the keyboard shortcut being active
+   - being installed in Applications
+   - launch at login (optional)
+
+   Each permission is checked by a fresh process, which catches the case where System Settings shows a switch as on
+   but macOS still refuses it. You can reopen the checklist anytime: menu bar → Setup Checklist.
 
 Requires macOS 14 or later, Apple Silicon or Intel. Quit other ⌘Tab tools such as AltTab first.
 
