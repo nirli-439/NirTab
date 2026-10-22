@@ -54,6 +54,7 @@ Order is most recently used. Minimized, hidden and windowless entries go last.
 - exclude apps by name
 - previews on/off, memory on/off, tile size
 - switcher style: default auto-fit grid, compact list, or custom grid (1–8 windows per row; limited by display width)
+- switcher background: choose an image (stored as a resized local copy) or restore the default glass
 - which screen the switcher opens on
 - window movement shortcuts and five custom key bindings
 - launch at login
@@ -71,6 +72,7 @@ and path, and every release keeps all three the same.
 swift re/e2e.swift    # live check: minimize → listed with preview → restored through the real switcher
 /Applications/NirTab.app/Contents/MacOS/NirTab --test-layout  # layout geometry checks
 /Applications/NirTab.app/Contents/MacOS/NirTab --test-recorder # shortcut recorder check
+/Applications/NirTab.app/Contents/MacOS/NirTab --test-background # image import/resize check
 /Applications/NirTab.app/Contents/MacOS/NirTab -layout list --test-styles # live layout and scroll check
 swift re/move-e2e.swift  # live check: all four halves and both display directions
 ```
@@ -79,10 +81,10 @@ A local build has **Update (rebuild from source)** in its menu instead of Check 
 ## Releasing
 Push a tag, or run the **Release** workflow by hand with a version number:
 ```bash
-git tag v0.11 && git push origin v0.11
+git tag v0.12 && git push origin v0.12
 ```
 `.github/workflows/release.yml` then builds a universal app on a macOS runner, signs it, smoke-tests it and publishes
-`NirTab-0.11.zip` as a GitHub release. Installed copies pick it up via Check for Updates.
+`NirTab-0.12.zip` as a GitHub release. Installed copies pick it up via Check for Updates.
 
 ### Signing
 All releases must be signed with the same certificate, otherwise every user would have to grant permissions again
@@ -114,7 +116,7 @@ gh secret set SIGNING_CERT_PASSWORD
 - **Memory:** `proc_pid_rusage` physical footprint for every process, added up per app with
   `responsibility_get_pid_responsible_for_pid`. That covers Chrome tabs, Electron renderers and XPC helpers, and
   takes about 15 ms. macOS has no per-window memory figure.
-- **Keys:** a `CGEventTap` catches ⌘Tab before the system switcher does.
+- **Keys:** a `CGEventTap` catches ⌘Tab before the system switcher does; a two-second check restores a disabled tap or retries a failed one.
 
 ### Limits
 - **Current Space only.** Windows on other desktops need private SkyLight calls that break between macOS releases.

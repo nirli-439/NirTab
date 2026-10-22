@@ -4,9 +4,11 @@
 // Release the hold key to switch (restores minimized/hidden), Esc to cancel.
 import AppKit
 import ApplicationServices
+import ImageIO
 import ScreenCaptureKit
 import ServiceManagement
 import SwiftUI
+import UniformTypeIdentifiers
 
 // Window id for an AX window: private but tiny and stable for 10+ years; AltTab relies on it too.
 @_silgen_name("_AXUIElementGetWindow") func _AXUIElementGetWindow(_ el: AXUIElement, _ id: UnsafeMutablePointer<CGWindowID>) -> AXError
@@ -41,6 +43,24 @@ enum Prefs {
         Set((defaults.string(forKey: "excluded") ?? "").split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }.filter { !$0.isEmpty })
     }
+}
+
+// Keep a downsampled local copy so moving the original photo cannot break the switcher.
+let backgroundURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    .appendingPathComponent("NirTab/background.png")
+enum BackgroundError: Error { case invalidImage }
+func installBackground(from source: URL, at destination: URL) throws {
+    guard let imageSource = CGImageSourceCreateWithURL(source as CFURL, nil),
+          let image = CGImageSourceCreateThumbnailAtIndex(imageSource, 0, [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: 1600
+          ] as CFDictionary),
+          let data = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else {
+        throw BackgroundError.invalidImage
+    }
+    try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try data.write(to: destination, options: .atomic)
 }
 
 // MARK: - Windows
@@ -470,6 +490,7 @@ final class Tile: NSStackView {
 final class Switcher {
     let panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
     let fx = NSVisualEffectView()
+    let background = NSView()
     let grid = NSStackView()
     let scroll = NSScrollView()
     var wins: [Win] = []
@@ -508,6 +529,9 @@ final class Switcher {
         let tint = NSView()
         tint.layer = glow
         tint.wantsLayer = true
+        background.wantsLayer = true
+        background.layer?.contentsGravity = .resizeAspectFill
+        background.layer?.opacity = 0.4  // retain legibility over bright photos
         grid.orientation = .vertical
         grid.alignment = .centerX
         grid.spacing = 10
@@ -516,7 +540,7 @@ final class Switcher {
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.documentView = grid
-        for v in [tint, scroll] {
+        for v in [tint, background, scroll] {
             v.translatesAutoresizingMaskIntoConstraints = false
             fx.addSubview(v)
             NSLayoutConstraint.activate([
@@ -525,6 +549,7 @@ final class Switcher {
             ])
         }
         panel.contentView = fx
+        refreshBackground()
         let nc = NSWorkspace.shared.notificationCenter
         // Live refresh: apps quitting/launching (from here, the Dock, anywhere) update the open switcher at once.
         for n in [NSWorkspace.didTerminateApplicationNotification, NSWorkspace.didLaunchApplicationNotification] {
@@ -587,6 +612,12 @@ final class Switcher {
             ?? current.flatMap { c in wins.firstIndex { $0.app == c.app } }
             ?? min(sel, wins.count - 1)
         render()
+    }
+
+    func refreshBackground() {
+        background.layer?.contents = defaults.bool(forKey: "backgroundInstalled")
+            ? CGImageSourceCreateWithURL(backgroundURL as CFURL, nil).flatMap { CGImageSourceCreateImageAtIndex($0, 0, nil) }
+            : nil
     }
 
     func render() {
@@ -887,7 +918,7 @@ func updateFromSource() {
     try? p.run()
 }
 
-func alert(_ title: String, _ text: String) {
+func showAlert(_ title: String, _ text: String) {
     NSApp.activate(ignoringOtherApps: true)
     let a = NSAlert()
     a.messageText = title
@@ -913,12 +944,12 @@ func updateFromGitHub(quiet: Bool = false) {
               let tag = json["tag_name"] as? String,
               let asset = (json["assets"] as? [[String: Any]])?.first(where: { ($0["name"] as? String)?.hasSuffix(".zip") == true }),
               let url = (asset["browser_download_url"] as? String).flatMap(URL.init) else {
-            if !quiet { DispatchQueue.main.async { alert("Couldn't check for updates", "No release found at github.com/\(repo).") } }
+            if !quiet { DispatchQueue.main.async { showAlert("Couldn't check for updates", "No release found at github.com/\(repo).") } }
             return
         }
         let latest = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
         guard isNewer(latest, than: current) else {
-            if !quiet { DispatchQueue.main.async { alert("NirTab is up to date", "You have \(current), the latest version.") } }
+            if !quiet { DispatchQueue.main.async { showAlert("NirTab is up to date", "You have \(current), the latest version.") } }
             return
         }
         URLSession.shared.downloadTask(with: url) { file, _, _ in
@@ -1119,6 +1150,19 @@ struct SettingsView: View {
     @AppStorage("columns") var columns = 4
     @AppStorage("screen") var screen = "mouse"
     @AppStorage("excluded") var excluded = ""
+    @AppStorage("backgroundInstalled") var hasBackground = false
+
+    func chooseBackground() {
+        let picker = NSOpenPanel()
+        picker.allowedContentTypes = [.image]
+        picker.allowsMultipleSelection = false
+        guard picker.runModal() == .OK, let url = picker.url else { return }
+        do {
+            try installBackground(from: url, at: backgroundURL)
+            hasBackground = true
+            switcher.refreshBackground()
+        } catch { showAlert("Couldn't use image", "Choose a readable image file. \(error.localizedDescription)") }
+    }
 
     @ObservedObject var h = health
     var holdKey: String { ["opt": "⌥", "ctrl": "⌃"][hold] ?? "⌘" }
@@ -1194,6 +1238,18 @@ struct SettingsView: View {
                         }
                         Text("Uses fewer columns if the display is too narrow.").font(.caption).foregroundStyle(.secondary)
                     }
+                    LabeledContent {
+                        HStack {
+                            Button("Choose Image…") { chooseBackground() }
+                            Button("Restore Glass") {
+                                do {
+                                    try FileManager.default.removeItem(at: backgroundURL)
+                                    hasBackground = false
+                                    switcher.refreshBackground()
+                                } catch { showAlert("Couldn't restore glass", error.localizedDescription) }
+                            }.disabled(!hasBackground)
+                        }
+                    } label: { rowLabel("Switcher background", "photo", .mint) }
                     Toggle(isOn: $previews) { rowLabel("Window previews", "photo.on.rectangle", .pink) }
                     Toggle(isOn: $memory) { rowLabel("Show app memory", "memorychip", .green) }
                     LabeledContent {
@@ -1269,6 +1325,21 @@ if CommandLine.arguments.contains("--test-styles") {
         precondition(first != last, "keyboard selection must scroll to the last window")
     }
     print("styles PASS: \(Prefs.layout), \(s.grid.arrangedSubviews.count - 1) rows, scroll \(first) → \(last)")
+    exit(0)
+}
+if CommandLine.arguments.contains("--test-background") {
+    let target = FileManager.default.temporaryDirectory.appendingPathComponent("nirtab-background-test-\(UUID().uuidString).png")
+    defer { try? FileManager.default.removeItem(at: target) }
+    do {
+        try installBackground(from: URL(fileURLWithPath: "icons/AppIcon.icns"), at: target)
+        let source = CGImageSourceCreateWithURL(target as CFURL, nil)!
+        let image = CGImageSourceCreateImageAtIndex(source, 0, nil)!
+        precondition(max(image.width, image.height) <= 1600)
+        do { try installBackground(from: URL(fileURLWithPath: "README.md"), at: target); fatalError("accepted a non-image") }
+        catch BackgroundError.invalidImage { }
+        precondition(CGImageSourceCreateWithURL(target as CFURL, nil) != nil, "bad input replaced the previous image")
+        print("background PASS: \(image.width)x\(image.height)")
+    } catch { print("background FAIL: \(error)"); exit(1) }
     exit(0)
 }
 if let i = CommandLine.arguments.firstIndex(of: "--snapshot") {
@@ -1525,6 +1596,7 @@ func openSetup() {
 
 let switcher = Switcher()
 var tap: CFMachPort?
+var tapSource: CFRunLoopSource?
 
 let callback: CGEventTapCallBack = { _, type, event, _ in
     if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
@@ -1587,8 +1659,11 @@ func startTap() -> Bool {
     let mask = (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.keyUp.rawValue) | (1 << CGEventType.flagsChanged.rawValue)
     guard let t = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
                                     eventsOfInterest: CGEventMask(mask), callback: callback, userInfo: nil) else { return false }
+    if let old = tapSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), old, .commonModes) }
+    if let old = tap { CFMachPortInvalidate(old) }
     tap = t
-    CFRunLoopAddSource(CFRunLoopGetMain(), CFMachPortCreateRunLoopSource(nil, t, 0), .commonModes)
+    tapSource = CFMachPortCreateRunLoopSource(nil, t, 0)
+    CFRunLoopAddSource(CFRunLoopGetMain(), tapSource, .commonModes)
     CGEvent.tapEnable(tap: t, enable: true)
     startedTap = true
     return true
@@ -1671,13 +1746,33 @@ DispatchQueue.global().async {
     DispatchQueue.main.async { if !ok || !startedTap || CommandLine.arguments.contains("--setup") { openSetup() } }
 }
 
-// Pick up grants without a manual restart. ponytail: polls a child every 2s only while something is missing.
-Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { t in
+// Retry a failed tap and recover from sleep/input-monitoring resets without a manual restart.
+Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
+    if menuBar.ax {
+        if let tap, CFMachPortIsValid(tap) {
+            if !CGEvent.tapIsEnabled(tap: tap) { CGEvent.tapEnable(tap: tap, enable: true) }
+            menuBar.working = CGEvent.tapIsEnabled(tap: tap)
+            health.tap = menuBar.working
+        } else {
+            menuBar.working = startTap()
+            health.tap = menuBar.working
+        }
+    }
     let needAX = !menuBar.ax, needScreen = !menuBar.screen
-    if !needAX && !needScreen { t.invalidate(); return }
+    if !needAX && !needScreen { return }
     if switcher.open { return }
     // Relaunch (with the checklist reopened) once a missing grant lands, so this process picks it up.
     if (needAX && childSays("--trusted")) || (needScreen && childSays("--screen")) { relaunch(setup: true) }
+}
+
+if CommandLine.arguments.contains("--test-tap-recovery") {
+    guard startedTap, let tap else { print("tap unavailable (Accessibility?)"); exit(1) }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 1) { CGEvent.tapEnable(tap: tap, enable: false) }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
+        let ok = CGEvent.tapIsEnabled(tap: tap)
+        print("tap recovery \(ok ? "PASS" : "FAIL")")
+        exit(ok ? 0 : 1)
+    }
 }
 
 app.run()

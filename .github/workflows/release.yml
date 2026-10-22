@@ -51,6 +51,7 @@ jobs:
           codesign --verify --verbose NirTab.app
           NirTab.app/Contents/MacOS/NirTab --test-layout
           NirTab.app/Contents/MacOS/NirTab --test-recorder
+          NirTab.app/Contents/MacOS/NirTab --test-background
           lipo -archs NirTab.app/Contents/MacOS/NirTab
           /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" NirTab.app/Contents/Info.plist
           ! /usr/libexec/PlistBuddy -c "Print :NirTabSourceDir" NirTab.app/Contents/Info.plist 2>/dev/null
