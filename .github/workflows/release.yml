@@ -50,6 +50,7 @@ jobs:
         run: |
           codesign --verify --verbose NirTab.app
           NirTab.app/Contents/MacOS/NirTab --test-layout
+          NirTab.app/Contents/MacOS/NirTab --test-rectangle-ui
           NirTab.app/Contents/MacOS/NirTab --test-recorder
           NirTab.app/Contents/MacOS/NirTab --test-background
           NirTab.app/Contents/MacOS/NirTab --test-extras

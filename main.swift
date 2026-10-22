@@ -21,7 +21,9 @@ import UniformTypeIdentifiers
 let defaults = UserDefaults.standard
 defaults.register(defaults: ["hold": "cmd", "minimized": "end", "showHidden": true, "showWindowless": true,
                              "previews": true, "size": 260.0, "screen": "mouse", "excluded": "", "memory": true,
-                             "layout": "default", "columns": 4, "focusMinutes": 25, "breakMinutes": 5])
+                             "layout": "default", "columns": 4, "focusMinutes": 25, "breakMinutes": 5,
+                             "rectangleGap": 0.0, "rectangleMaxPerRow": 3, "rectangleMaxPerColumn": 3,
+                             "rectangleWidth": 1100, "rectangleHeight": 700, "rectangleIgnored": ""])
 
 enum Prefs {
     static var holdMask: CGEventFlags {
@@ -88,12 +90,12 @@ func windowZOrder() -> (byWid: [CGWindowID: Int], byPid: [pid_t: Int]) {
 // Every window of every regular app: standard + dialogs, minimized, hidden apps, and apps with no window at all.
 // ponytail: current Space only (AX can't see other Spaces). AltTab brute-forces
 //           _AXUIElementCreateWithRemoteToken for other Spaces (~1-5s per app measured here) — add if Spaces get used.
-func listWindows() -> [Win] {
+func listWindows(includeExcluded: Bool = false) -> [Win] {
     let z = windowZOrder()
     let excluded = Prefs.excluded, mini = Prefs.minimized, showHidden = Prefs.showHidden
     let apps = NSWorkspace.shared.runningApplications.filter {
         $0.activationPolicy == .regular && $0.processIdentifier != getpid() && !$0.isTerminated
-            && !excluded.contains(($0.localizedName ?? "").lowercased()) && (showHidden || !$0.isHidden)
+            && (includeExcluded || !excluded.contains(($0.localizedName ?? "").lowercased())) && (showHidden || !$0.isHidden)
     }
     var shown: [Win] = [], parked: [Win] = []  // parked = minimized / hidden / windowless, listed last like AltTab
     for app in apps {
@@ -252,6 +254,7 @@ func performWindowAction(_ action: String) {
 }
 
 if CommandLine.arguments.contains("--test-layout") {
+    testRectangleGeometry()
     let displays = [CGRect(x: 0, y: 0, width: 1000, height: 800), CGRect(x: -1200, y: 0, width: 1200, height: 900)]
     precondition(nextScreen(0, direction: 123, in: displays) == 1)
     precondition(nextScreen(1, direction: 124, in: displays) == 0)
@@ -272,6 +275,14 @@ if CommandLine.arguments.contains("--test-layout") {
     precondition(customAction(18, [.maskCommand, .maskShift], in: test) == nil)
     test.set("none", forKey: "customAction1")
     precondition(customAction(18, .maskCommand, in: test) == nil)
+    precondition(rectangleShortcut(123, [.maskControl, .maskAlternate], in: test) == "left-half")
+    test.set("", forKey: "rectKey.left-half")
+    precondition(rectangleShortcut(123, [.maskControl, .maskAlternate], in: test) == nil)
+    test.set("\(CGEventFlags.maskControl.rawValue):18:1", forKey: "rectKey.tile-all")
+    precondition(rectangleShortcut(18, .maskControl, in: test) == "tile-all")
+    let clock = CFAbsoluteTimeGetCurrent()
+    for _ in 0..<10000 { _ = rectangleShortcut(0, .maskCommand, in: test) }
+    print(String(format: "shortcut lookup %.3f ms/event", (CFAbsoluteTimeGetCurrent() - clock) * 1000 / 10000))
     print("layout PASS")
     exit(0)
 }
@@ -1050,14 +1061,25 @@ var recordingShortcut = false
 final class ShortcutButton: NSButton {
     var save: (String) -> Void = { _ in }
     var shortcut = "" { didSet { if !recordingShortcut { showShortcut() } } }
+    var mouseMonitor: Any?
     override var acceptsFirstResponder: Bool { true }
     override func mouseDown(with event: NSEvent) {
         guard window?.makeFirstResponder(self) == true else { return }
         recordingShortcut = true
-        title = "Press shortcut (Esc cancels)"
+        title = "Press key or mouse button"
+        mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: .otherMouseDown) { [weak self] event in
+            guard let self, self.window?.firstResponder === self else { return event }
+            let button = event.buttonNumber
+            guard button >= 2 else { return event }
+            let flags = CGEventFlags(rawValue: UInt64(event.modifierFlags.rawValue) & shortcutFlags.rawValue)
+            self.save("\(flags.rawValue):\(-button - 1):Mouse \(button + 1)")
+            self.window?.makeFirstResponder(nil)
+            return nil
+        }
     }
     override func resignFirstResponder() -> Bool {
         recordingShortcut = false
+        if let monitor = mouseMonitor { NSEvent.removeMonitor(monitor); mouseMonitor = nil }
         showShortcut()
         return super.resignFirstResponder()
     }
@@ -1154,6 +1176,15 @@ struct SettingsView: View {
     @AppStorage("backgroundInstalled") var hasBackground = false
     @AppStorage("focusMinutes") var focusMinutes = 25
     @AppStorage("breakMinutes") var breakMinutes = 5
+    @AppStorage("rectangleSpectacle") var rectangleSpectaclePreset = false
+    @AppStorage("rectangleGap") var rectangleGap = 0.0
+    @AppStorage("rectangleDragSnap") var rectangleDragSnap = false
+    @AppStorage("rectangleMaxPerRow") var rectangleMaxPerRow = 3
+    @AppStorage("rectangleMaxPerColumn") var rectangleMaxPerColumn = 3
+    @AppStorage("rectangleWidth") var rectangleWidth = 1100
+    @AppStorage("rectangleHeight") var rectangleHeight = 700
+    @AppStorage("rectangleStackSameSize") var rectangleStackSameSize = false
+    @AppStorage("rectangleIgnored") var rectangleIgnored = ""
 
     func chooseBackground() {
         let picker = NSOpenPanel()
@@ -1222,6 +1253,26 @@ struct SettingsView: View {
                     ForEach(1...5, id: \.self) { CustomShortcutRow($0) }
                     Text("Choose an action, click Record, then press its shortcut. Custom shortcuts take priority over built-in ones; the first matching slot wins.")
                         .font(.caption).foregroundStyle(.secondary)
+                }
+                Section("Window layouts") {
+                    Toggle("Use Spectacle shortcuts instead of Rectangle defaults", isOn: $rectangleSpectaclePreset)
+                    Toggle("Snap windows by dragging to screen edges", isOn: $rectangleDragSnap)
+                    Text("NirTab's existing shortcuts take priority. You can change or clear any layout shortcut below.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    LabeledContent("Screen edge gap") { Slider(value: $rectangleGap, in: 0...60, step: 1).frame(width: 160); Text("\(Int(rectangleGap)) pt") }
+                    Stepper("Maximum windows per row: \(rectangleMaxPerRow)", value: $rectangleMaxPerRow, in: 1...10)
+                    Stepper("Maximum windows per column: \(rectangleMaxPerColumn)", value: $rectangleMaxPerColumn, in: 1...10)
+                    Toggle("Only cycle stacked windows of the same size", isOn: $rectangleStackSameSize)
+                    TextField("Ignored app bundle IDs (comma-separated)", text: $rectangleIgnored)
+                    HStack {
+                        Text("Specified size")
+                        TextField("Width", value: $rectangleWidth, format: .number).frame(width: 72)
+                        Text("×")
+                        TextField("Height", value: $rectangleHeight, format: .number).frame(width: 72)
+                    }
+                    DisclosureGroup("Layout shortcuts and actions") {
+                        ForEach(rectangleActions, id: \.0) { id, title in RectangleShortcutRow(id, title) }
+                    }.id(rectangleSpectaclePreset)
                 }
                 Section("Windows") {
                     Picker(selection: $minimized) {
@@ -1613,7 +1664,16 @@ let callback: CGEventTapCallBack = { _, type, event, _ in
         if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
         return Unmanaged.passUnretained(event)
     }
-    let code = event.getIntegerValueField(.keyboardEventKeycode)
+    if defaults.bool(forKey: "rectangleDragSnap") {
+        let point = event.location
+        if type == .leftMouseDown { DispatchQueue.main.async { rectangleDragBegin(point) } }
+        if type == .leftMouseDragged { DispatchQueue.main.async { rectangleDragMove(point) } }
+        if type == .leftMouseUp { DispatchQueue.main.async { rectangleDragEnd(point) } }
+    }
+    let isMouse = type == .otherMouseDown || type == .otherMouseUp
+    let down = type == .keyDown || type == .otherMouseDown
+    let up = type == .keyUp || type == .otherMouseUp
+    let code = isMouse ? -event.getIntegerValueField(.mouseEventButtonNumber) - 1 : event.getIntegerValueField(.keyboardEventKeycode)
     let held = event.flags.contains(Prefs.holdMask)
     let modifiers = event.flags.intersection([.maskControl, .maskAlternate, .maskCommand, .maskShift])
     if recordingShortcut && settingsWindow?.isKeyWindow == true { return Unmanaged.passUnretained(event) }
@@ -1636,6 +1696,16 @@ let callback: CGEventTapCallBack = { _, type, event, _ in
             DispatchQueue.main.async { moveFrontWindow(code, toDisplay: display) }
         }
         if type == .keyDown || type == .keyUp { return nil }
+    }
+    if !switcher.open && (down || up),
+       let action = rectangleShortcut(code, modifiers) {
+        let bundle = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? ""
+        let ignored = (defaults.string(forKey: "rectangleIgnored") ?? "").split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+        if !ignored.contains(bundle) {
+            if down { DispatchQueue.main.async { rectanglePerform(action) } }
+            return nil
+        }
     }
     // State flips here, synchronously; heavy AX work goes to the next runloop turn so the tap never times out.
     switch type {
@@ -1673,7 +1743,10 @@ let callback: CGEventTapCallBack = { _, type, event, _ in
 
 var startedTap = false
 func startTap() -> Bool {
-    let mask = (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.keyUp.rawValue) | (1 << CGEventType.flagsChanged.rawValue)
+    let mask = (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.keyUp.rawValue)
+        | (1 << CGEventType.flagsChanged.rawValue) | (1 << CGEventType.otherMouseDown.rawValue)
+        | (1 << CGEventType.otherMouseUp.rawValue) | (1 << CGEventType.leftMouseDown.rawValue)
+        | (1 << CGEventType.leftMouseDragged.rawValue) | (1 << CGEventType.leftMouseUp.rawValue)
     guard let t = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
                                     eventsOfInterest: CGEventMask(mask), callback: callback, userInfo: nil) else { return false }
     if let old = tapSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), old, .commonModes) }
@@ -1717,6 +1790,27 @@ final class MenuBar: NSObject, NSMenuDelegate {
         let login = add(menu, "Launch at Login", #selector(toggleLogin))
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
         menu.addItem(.separator())
+        let layouts = NSMenu()
+        for start in stride(from: 0, to: rectangleActions.count, by: 16) {
+            let group = NSMenu()
+            for (id, title) in rectangleActions[start..<min(start + 16, rectangleActions.count)] {
+                let item = add(group, title, #selector(runLayout(_:)))
+                item.representedObject = id
+            }
+            let groupItem = NSMenuItem(title: "\(rectangleActions[start].1) …", action: nil, keyEquivalent: "")
+            groupItem.submenu = group
+            layouts.addItem(groupItem)
+        }
+        let layoutItem = NSMenuItem(title: "Window Layouts", action: nil, keyEquivalent: "")
+        layoutItem.submenu = layouts
+        menu.addItem(layoutItem)
+        let ignoredApp = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? ""
+        if !ignoredApp.isEmpty && ignoredApp != Bundle.main.bundleIdentifier {
+            let ignored = add(menu, "Ignore Frontmost App for Layout Shortcuts", #selector(toggleIgnoredApp))
+            ignored.state = (defaults.string(forKey: "rectangleIgnored") ?? "").split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespaces) }.contains(ignoredApp) ? .on : .off
+        }
+        menu.addItem(.separator())
         let experimental = NSMenu()
         let clips = add(experimental, "Clipboard history (⌥⌘V)", #selector(toggleClipboard))
         clips.state = defaults.bool(forKey: "clipboardEnabled") ? .on : .off
@@ -1741,6 +1835,16 @@ final class MenuBar: NSObject, NSMenuDelegate {
     }
 
     @objc func settings() { openSettings() }
+    @objc func runLayout(_ sender: NSMenuItem) {
+        if let id = sender.representedObject as? String { rectanglePerform(id) }
+    }
+    @objc func toggleIgnoredApp() {
+        guard let bundle = NSWorkspace.shared.frontmostApplication?.bundleIdentifier else { return }
+        var ids = (defaults.string(forKey: "rectangleIgnored") ?? "").split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        if ids.contains(bundle) { ids.removeAll { $0 == bundle } } else { ids.append(bundle) }
+        defaults.set(ids.joined(separator: ","), forKey: "rectangleIgnored")
+    }
     @objc func setup() { openSetup() }
     @objc func showClipboard() { openClipboard() }
     @objc func toggleClipboard() { clipboard.setEnabled(!defaults.bool(forKey: "clipboardEnabled")) }
@@ -1756,7 +1860,16 @@ final class MenuBar: NSObject, NSMenuDelegate {
 
 // MARK: - Start
 
+final class URLHandler: NSObject, NSApplicationDelegate {
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            if let action = rectangleActionURL(url) { rectanglePerform(action) }
+        }
+    }
+}
+let urlHandler = URLHandler()
 let app = NSApplication.shared
+app.delegate = urlHandler
 app.setActivationPolicy(.accessory)
 
 // One instance only: a relaunch or double-open replaces the old copy instead of fighting it for the shortcut.
@@ -1827,6 +1940,18 @@ if CommandLine.arguments.contains("--test-pomodoro-ui") {
         pomodoro.setEnabled(false)
         exit(ok ? 0 : 1)
     }
+}
+if CommandLine.arguments.contains("--test-rectangle-ui") {
+    let menu = menuBar.item.menu!
+    menuBar.menuNeedsUpdate(menu)
+    let layouts = menu.item(withTitle: "Window Layouts")?.submenu
+    let items = layouts?.items.flatMap { $0.submenu?.items ?? [] } ?? []
+    precondition(items.count == rectangleActions.count)
+    precondition(Set(items.compactMap { $0.representedObject as? String }) == Set(rectangleActions.map(\.0)))
+    openSettings()
+    precondition(settingsWindow?.isVisible == true)
+    print("rectangle UI PASS: \(items.count) actions, settings visible")
+    exit(0)
 }
 
 app.run()

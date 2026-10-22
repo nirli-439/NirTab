@@ -1,6 +1,6 @@
 # NirTab
 
-A Windows-style ⌘Tab window switcher for macOS: one Swift file, no dependencies.
+A Windows-style ⌘Tab window switcher and window layout tool for macOS. Native Swift, no dependencies.
 
 Hold ⌘ and press Tab to see **every window of every app**, including minimized and hidden windows and apps with no
 open window. Each one shows a live preview. Release ⌘ to jump to the selected window. Minimized windows are restored.
@@ -40,6 +40,16 @@ An arrow with no display in that direction does nothing. Some macOS apps do not 
 then press ⌘, ⌥ or ⌃ (optionally ⇧) plus a key. Changes work immediately. **Clear** disables a slot.
 Custom shortcuts override the built-in window movement shortcuts; if two slots use the same keys, the first wins.
 
+**Window layouts:** The menu bar → Window Layouts offers halves, thirds, quarters, sixths, eighths, ninths,
+twelfths and sixteenths; vertical sizes, moving/resizing, display targeting, restore, stacked-window cycling,
+and tiling/cascading windows. Settings → Window layouts lets you record or clear a shortcut for each action,
+select Rectangle's recommended keyboard defaults or the older Spectacle preset, set a screen-edge gap,
+configure row/column tiling limits, and ignore chosen apps. Middle/extra mouse buttons can be recorded as shortcuts.
+NirTab's existing ⌥⌘ and ⌃⌥⌘ arrow shortcuts keep priority where they overlap.
+Enable **Snap windows by dragging to screen edges** to get a footprint and snap on release; this is off by default.
+Other apps may constrain the resulting window size or position.
+Actions can also be triggered without activating NirTab via `open -g 'nirtab://execute-action?name=left-half'`.
+
 **Experimental features** (menu bar → Experimental Features, both off by default):
 - **Clipboard history**: ⌥⌘V shows copied text, images/media and file references. Copy an entry back to the clipboard,
   pin it, or delete it. Up to 50 recent and 20 pinned items (16 MB per capture). Stored **unencrypted** in
@@ -64,7 +74,7 @@ Order is most recently used. Minimized, hidden and windowless entries go last.
 - switcher style: default auto-fit grid, compact list, or custom grid (1–8 windows per row; limited by display width)
 - switcher background: choose an image (stored as a resized local copy) or restore the default glass
 - which screen the switcher opens on
-- window movement shortcuts and five custom key bindings
+- window movement shortcuts, five custom key bindings, and per-action layout shortcuts
 - launch at login
 
 ## Updates
@@ -79,21 +89,23 @@ and path, and every release keeps all three the same.
 /Applications/NirTab.app/Contents/MacOS/NirTab --list     # what the switcher would show, with memory and previews
 swift re/e2e.swift    # live check: minimize → listed with preview → restored through the real switcher
 /Applications/NirTab.app/Contents/MacOS/NirTab --test-layout  # layout geometry checks
+/Applications/NirTab.app/Contents/MacOS/NirTab --test-rectangle-ui # all layout menu actions and Settings
 /Applications/NirTab.app/Contents/MacOS/NirTab --test-recorder # shortcut recorder check
 /Applications/NirTab.app/Contents/MacOS/NirTab --test-background # image import/resize check
 /Applications/NirTab.app/Contents/MacOS/NirTab --test-extras # clipboard and timer checks
 /Applications/NirTab.app/Contents/MacOS/NirTab -layout list --test-styles # live layout and scroll check
 swift re/move-e2e.swift  # live check: all four halves and both display directions
+swift re/move-e2e.swift --rectangle --rectangle-url # live layout shortcuts and URL action
 ```
 A local build has **Update (rebuild from source)** in its menu instead of Check for Updates.
 
 ## Releasing
 Push a tag, or run the **Release** workflow by hand with a version number:
 ```bash
-git tag v0.13 && git push origin v0.13
+git tag v0.14 && git push origin v0.14
 ```
 `.github/workflows/release.yml` then builds a universal app on a macOS runner, signs it, smoke-tests it and publishes
-`NirTab-0.13.zip` as a GitHub release. Installed copies pick it up via Check for Updates.
+`NirTab-0.14.zip` as a GitHub release. Installed copies pick it up via Check for Updates.
 
 ### Signing
 All releases must be signed with the same certificate, otherwise every user would have to grant permissions again
@@ -134,6 +146,8 @@ gh secret set SIGNING_CERT_PASSWORD
 ## Credits
 Inspired by [AltTab](https://github.com/lwouis/alt-tab-macos) (GPL-3.0). NirTab is an independent reimplementation
 and contains no AltTab code or artwork.
+Window-layout actions are independently implemented based on the behavior documented by
+[Rectangle](https://github.com/rxhanson/Rectangle) (MIT); no Rectangle source or artwork is included.
 
 ## License
 [MIT](LICENSE)
