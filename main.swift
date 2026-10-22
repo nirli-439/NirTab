@@ -367,17 +367,18 @@ func memoryColor(_ b: UInt64) -> NSColor {
 // Round, colored hover button (traffic-light style).
 final class ClosureButton: NSButton {
     var handler: () -> Void = {}
-    convenience init(symbol: String, tip: String, color: NSColor, _ handler: @escaping () -> Void) {
+    convenience init(symbol: String, tip: String, color: NSColor, size: CGFloat = 22, _ handler: @escaping () -> Void) {
         self.init(frame: .zero)
         image = NSImage(systemSymbolName: symbol, accessibilityDescription: tip)?
-            .withSymbolConfiguration(.init(pointSize: 9, weight: .bold))
+            .withSymbolConfiguration(.init(pointSize: size == 22 ? 9 : 13, weight: .bold))
         imagePosition = .imageOnly
+        imageScaling = .scaleProportionallyDown
         isBordered = false
         toolTip = tip
         contentTintColor = .white
         wantsLayer = true
         layer?.backgroundColor = color.cgColor
-        layer?.cornerRadius = 11
+        layer?.cornerRadius = size / 2
         layer?.shadowColor = NSColor.black.cgColor
         layer?.shadowOpacity = 0.35
         layer?.shadowRadius = 3
@@ -385,8 +386,8 @@ final class ClosureButton: NSButton {
         self.handler = handler
         target = self
         action = #selector(fire)
-        widthAnchor.constraint(equalToConstant: 22).isActive = true
-        heightAnchor.constraint(equalToConstant: 22).isActive = true
+        widthAnchor.constraint(equalToConstant: size).isActive = true
+        heightAnchor.constraint(equalToConstant: size).isActive = true
     }
     @objc func fire() { handler() }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
@@ -622,8 +623,9 @@ final class Switcher {
     func tile(_ w: Win, _ i: Int) -> Tile {
         let name = w.app.localizedName ?? "?"
         let icon = NSImageView(image: w.app.icon ?? NSImage())
-        icon.widthAnchor.constraint(equalToConstant: 26).isActive = true
-        icon.heightAnchor.constraint(equalToConstant: 26).isActive = true
+        icon.imageScaling = .scaleProportionallyUpOrDown
+        icon.widthAnchor.constraint(equalToConstant: 28).isActive = true
+        icon.heightAnchor.constraint(equalToConstant: 28).isActive = true
         let title = NSTextField(labelWithString: w.ax == nil || w.title.isEmpty ? name : w.title)
         title.font = .systemFont(ofSize: 12.5, weight: .semibold)
         title.toolTip = "\(name) — \(w.title)"
@@ -695,7 +697,7 @@ final class Switcher {
             chip = pill(text, symbol: symbol, fg: .white, bg: NSColor.black.withAlphaComponent(0.6))
         }
 
-        // Hover buttons: close, minimize/restore, maximize, quit, force quit.
+        // Put the destructive action above the other hover controls, away from Close and Quit.
         var acts: [NSView] = []
         if w.ax != nil {
             acts.append(ClosureButton(symbol: "xmark", tip: "Close window (W)", color: .systemRed) { [weak self] in self?.act(13, at: i) })
@@ -705,9 +707,12 @@ final class Switcher {
             acts.append(ClosureButton(symbol: "arrow.up.left.and.arrow.down.right", tip: "Maximize / restore size (F)", color: .systemGreen) { [weak self] in self?.act(3, at: i) })
         }
         acts.append(ClosureButton(symbol: "power", tip: "Quit \(name) (Q)", color: NSColor(white: 0.42, alpha: 1)) { [weak self] in self?.act(12, at: i) })
-        acts.append(ClosureButton(symbol: "bolt.fill", tip: "Force quit \(name) (⇧Q)", color: .systemPurple) { [weak self] in self?.act(12, at: i, force: true) })
-        let buttons = NSStackView(views: acts)
+        let forceQuit = ClosureButton(symbol: "bolt.fill", tip: "Force quit \(name) (⇧Q) — unsaved work is lost", color: .systemRed, size: 30) { [weak self] in self?.act(12, at: i, force: true) }
+        let row = NSStackView(views: acts)
+        row.spacing = 6
+        let buttons = NSStackView(views: [row, NSView(), forceQuit])
         buttons.spacing = 6
+        buttons.widthAnchor.constraint(equalToConstant: tileW - 36).isActive = true
         buttons.isHidden = true
         overlays.append((buttons, true))
 

@@ -29,7 +29,7 @@ Requires macOS 14 or later, Apple Silicon or Intel. Quit other ⌘Tab tools such
 | Q · ⇧Q | quit app · force quit app (unsaved work is lost) |
 | release ⌘ / Esc | switch / cancel |
 
-**Mouse:** hover a tile to select it and show its buttons (close, minimize/restore, maximize, quit, force quit).
+**Mouse:** hover a tile to select it and show its buttons (close, minimize/restore, maximize, quit; larger red force quit above).
 Click a tile to switch to it.
 
 **Move the front window:** ⌥⌘ + ←/→/↑/↓ snaps it to the left/right/top/bottom half of its display.
@@ -77,10 +77,10 @@ A local build has **Update (rebuild from source)** in its menu instead of Check 
 ## Releasing
 Push a tag, or run the **Release** workflow by hand with a version number:
 ```bash
-git tag v0.9 && git push origin v0.9
+git tag v0.10 && git push origin v0.10
 ```
 `.github/workflows/release.yml` then builds a universal app on a macOS runner, signs it, smoke-tests it and publishes
-`NirTab-0.9.zip` as a GitHub release. Installed copies pick it up via Check for Updates.
+`NirTab-0.10.zip` as a GitHub release. Installed copies pick it up via Check for Updates.
 
 ### Signing
 All releases must be signed with the same certificate, otherwise every user would have to grant permissions again
