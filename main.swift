@@ -200,6 +200,30 @@ func moveFrontWindow(_ direction: Int64, toDisplay: Bool) {
     }
 }
 
+// Five optional bindings. The keycode is physical so a shortcut still works if the input language changes.
+let shortcutFlags: CGEventFlags = [.maskCommand, .maskAlternate, .maskControl, .maskShift]
+let windowActions: [(String, String)] = [
+    ("none", "Off"), ("left", "Left half"), ("right", "Right half"), ("top", "Top half"), ("bottom", "Bottom half"),
+    ("displayLeft", "Display left"), ("displayRight", "Display right"), ("displayUp", "Display up"), ("displayDown", "Display down")
+]
+func customAction(_ code: Int64, _ flags: CGEventFlags, in store: UserDefaults = defaults) -> String? {
+    for i in 1...5 {
+        let action = store.string(forKey: "customAction\(i)") ?? "none"
+        guard windowActions.contains(where: { $0.0 == action }), action != "none",
+              let saved = store.string(forKey: "customKey\(i)")?.split(separator: ":", maxSplits: 2), saved.count == 3,
+              let mask = UInt64(saved[0]), let key = Int64(saved[1]),
+              mask & ~CGEventFlags.maskShift.rawValue != 0, mask & ~shortcutFlags.rawValue == 0 else { continue }
+        if key == code && flags.intersection(shortcutFlags).rawValue == mask { return action }
+    }
+    return nil
+}
+func performWindowAction(_ action: String) {
+    let keys: [String: Int64] = ["left": 123, "right": 124, "top": 126, "bottom": 125,
+                                  "displayLeft": 123, "displayRight": 124, "displayUp": 126, "displayDown": 125]
+    guard let key = keys[action] else { return }
+    moveFrontWindow(key, toDisplay: action.hasPrefix("display"))
+}
+
 if CommandLine.arguments.contains("--test-layout") {
     let displays = [CGRect(x: 0, y: 0, width: 1000, height: 800), CGRect(x: -1200, y: 0, width: 1200, height: 900)]
     precondition(nextScreen(0, direction: 123, in: displays) == 1)
@@ -211,6 +235,13 @@ if CommandLine.arguments.contains("--test-layout") {
     precondition(half(displays[0], direction: 126) == CGRect(x: 0, y: 400, width: 1000, height: 400))
     precondition(half(displays[0], direction: 125) == CGRect(x: 0, y: 0, width: 1000, height: 400))
     precondition(flipY(flipY(CGRect(x: -800, y: 50, width: 400, height: 300), mainTop: 800), mainTop: 800) == CGRect(x: -800, y: 50, width: 400, height: 300))
+    let test = UserDefaults(suiteName: "nirtab-shortcut-test-\(UUID())")!
+    test.set("left", forKey: "customAction1")
+    test.set("\(CGEventFlags.maskCommand.rawValue):18:1", forKey: "customKey1")
+    precondition(customAction(18, .maskCommand, in: test) == "left")
+    precondition(customAction(18, [.maskCommand, .maskShift], in: test) == nil)
+    test.set("none", forKey: "customAction1")
+    precondition(customAction(18, .maskCommand, in: test) == nil)
     print("layout PASS")
     exit(0)
 }
@@ -927,6 +958,99 @@ struct StatusPill: View {
     }
 }
 
+var recordingShortcut = false
+final class ShortcutButton: NSButton {
+    var save: (String) -> Void = { _ in }
+    var shortcut = "" { didSet { if !recordingShortcut { showShortcut() } } }
+    override var acceptsFirstResponder: Bool { true }
+    override func mouseDown(with event: NSEvent) {
+        guard window?.makeFirstResponder(self) == true else { return }
+        recordingShortcut = true
+        title = "Press shortcut (Esc cancels)"
+    }
+    override func resignFirstResponder() -> Bool {
+        recordingShortcut = false
+        showShortcut()
+        return super.resignFirstResponder()
+    }
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53 { window?.makeFirstResponder(nil); return }
+        let flags = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        guard !flags.intersection([.command, .option, .control]).isEmpty, event.keyCode != 48 else {
+            NSSound.beep(); return // don't steal typing (including ⇧ letters) or switcher Tab
+        }
+        let label = [123: "←", 124: "→", 125: "↓", 126: "↑"][Int(event.keyCode)]
+            ?? (event.charactersIgnoringModifiers?.uppercased() ?? "")
+        guard !label.isEmpty, label.count <= 2, !label.contains(":") else { NSSound.beep(); return }
+        let mask = CGEventFlags(rawValue: UInt64(flags.rawValue) & shortcutFlags.rawValue)
+        save("\(mask.rawValue):\(event.keyCode):\(label)")
+        window?.makeFirstResponder(nil)
+    }
+    func showShortcut() {
+        guard let saved = shortcut.split(separator: ":", maxSplits: 2).first.flatMap({ UInt64($0) }),
+              let label = shortcut.split(separator: ":", maxSplits: 2).last, shortcut.contains(":") else {
+            title = "Record…"; return
+        }
+        let flags = CGEventFlags(rawValue: saved)
+        title = "\(flags.contains(.maskControl) ? "⌃" : "")\(flags.contains(.maskAlternate) ? "⌥" : "")\(flags.contains(.maskShift) ? "⇧" : "")\(flags.contains(.maskCommand) ? "⌘" : "")\(label)"
+    }
+}
+struct ShortcutRecorder: NSViewRepresentable {
+    @Binding var value: String
+    func makeNSView(context: Context) -> ShortcutButton {
+        let b = ShortcutButton(title: "Record…", target: nil, action: nil)
+        b.bezelStyle = .rounded
+        return b
+    }
+    func updateNSView(_ b: ShortcutButton, context: Context) {
+        b.save = { value = $0 }
+        b.shortcut = value
+    }
+}
+if CommandLine.arguments.contains("--test-recorder") {
+    _ = NSApplication.shared
+    let button = ShortcutButton(title: "Record…", target: nil, action: nil)
+    let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 200, height: 40), styleMask: .titled, backing: .buffered, defer: false)
+    window.contentView?.addSubview(button)
+    var recorded = ""
+    button.save = { recorded = $0 }
+    let click = NSEvent.mouseEvent(with: .leftMouseDown, location: .zero, modifierFlags: [], timestamp: 0,
+                                   windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+    button.mouseDown(with: click)
+    precondition(recordingShortcut && window.firstResponder === button)
+    let keys: NSEvent.ModifierFlags = [.control, .option, .command]
+    let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: keys, timestamp: 0,
+                                 windowNumber: 0, context: nil, characters: "1", charactersIgnoringModifiers: "1",
+                                 isARepeat: false, keyCode: 18)!
+    button.keyDown(with: event)
+    precondition(recorded == "\(CGEventFlags.maskControl.rawValue | CGEventFlags.maskAlternate.rawValue | CGEventFlags.maskCommand.rawValue):18:1")
+    precondition(!recordingShortcut)
+    button.shortcut = recorded
+    precondition(button.title == "⌃⌥⌘1")
+    print("recorder PASS")
+    exit(0)
+}
+struct CustomShortcutRow: View {
+    let index: Int
+    @AppStorage var action: String
+    @AppStorage var shortcut: String
+    init(_ index: Int) {
+        self.index = index
+        _action = AppStorage(wrappedValue: "none", "customAction\(index)")
+        _shortcut = AppStorage(wrappedValue: "", "customKey\(index)")
+    }
+    var body: some View {
+        HStack {
+            Text("\(index).").frame(width: 24, alignment: .leading)
+            Picker("Action", selection: $action) {
+                ForEach(windowActions, id: \.0) { id, name in Text(name).tag(id) }
+            }.labelsHidden().frame(maxWidth: .infinity)
+            ShortcutRecorder(value: $shortcut).frame(width: 160, height: 26)
+            Button("Clear") { shortcut = ""; action = "none" }.disabled(shortcut.isEmpty && action == "none")
+        }
+    }
+}
+
 struct SettingsView: View {
     @AppStorage("hold") var hold = "cmd"
     @AppStorage("minimized") var minimized = "end"
@@ -988,6 +1112,11 @@ struct SettingsView: View {
                 Section("Move front window") {
                     LabeledContent("Between displays") { Text("⌃⌥⌘ + ← → ↑ ↓").font(.callout) }
                     LabeledContent("Left / right / top / bottom half") { Text("⌥⌘ + ← → ↑ ↓").font(.callout) }
+                }
+                Section("Custom shortcuts") {
+                    ForEach(1...5, id: \.self) { CustomShortcutRow($0) }
+                    Text("Choose an action, click Record, then press its shortcut. Custom shortcuts take priority over built-in ones; the first matching slot wins.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("Windows") {
                     Picker(selection: $minimized) {
@@ -1312,6 +1441,12 @@ let callback: CGEventTapCallBack = { _, type, event, _ in
     let code = event.getIntegerValueField(.keyboardEventKeycode)
     let held = event.flags.contains(Prefs.holdMask)
     let modifiers = event.flags.intersection([.maskControl, .maskAlternate, .maskCommand, .maskShift])
+    if recordingShortcut && settingsWindow?.isKeyWindow == true { return Unmanaged.passUnretained(event) }
+    recordingShortcut = false
+    if !switcher.open, let action = customAction(code, modifiers), type == .keyDown || type == .keyUp {
+        if type == .keyDown { DispatchQueue.main.async { performWindowAction(action) } }
+        return nil
+    }
     if !switcher.open && [123, 124, 125, 126].contains(code),
        modifiers == [.maskAlternate, .maskCommand] || modifiers == [.maskControl, .maskAlternate, .maskCommand] {
         if type == .keyDown {

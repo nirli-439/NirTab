@@ -36,6 +36,10 @@ Click a tile to switch to it.
 ⌃⌥⌘ + an arrow sends it to the nearest display in that direction, keeping its size and relative position where possible.
 An arrow with no display in that direction does nothing. Some macOS apps do not allow their windows to be moved or resized.
 
+**Five custom shortcuts:** Settings → Custom shortcuts. For each slot, choose a window action, click **Record…**,
+then press ⌘, ⌥ or ⌃ (optionally ⇧) plus a key. Changes work immediately. **Clear** disables a slot.
+Custom shortcuts override the built-in window movement shortcuts; if two slots use the same keys, the first wins.
+
 **Tiles show:**
 - a window preview, plus the last picture taken of minimized windows
 - the app's memory, counting its helper processes the way Activity Monitor does (orange at 2 GB or more)
@@ -50,7 +54,7 @@ Order is most recently used. Minimized, hidden and windowless entries go last.
 - exclude apps by name
 - previews on/off, memory on/off, tile size
 - which screen the switcher opens on
-- window movement shortcuts (shown in Settings)
+- window movement shortcuts and five custom key bindings
 - launch at login
 
 ## Updates
@@ -65,6 +69,7 @@ and path, and every release keeps all three the same.
 /Applications/NirTab.app/Contents/MacOS/NirTab --list     # what the switcher would show, with memory and previews
 swift re/e2e.swift    # live check: minimize → listed with preview → restored through the real switcher
 /Applications/NirTab.app/Contents/MacOS/NirTab --test-layout  # layout geometry checks
+/Applications/NirTab.app/Contents/MacOS/NirTab --test-recorder # shortcut recorder check
 swift re/move-e2e.swift  # live check: all four halves and both display directions
 ```
 A local build has **Update (rebuild from source)** in its menu instead of Check for Updates.
@@ -72,10 +77,10 @@ A local build has **Update (rebuild from source)** in its menu instead of Check 
 ## Releasing
 Push a tag, or run the **Release** workflow by hand with a version number:
 ```bash
-git tag v0.8 && git push origin v0.8
+git tag v0.9 && git push origin v0.9
 ```
 `.github/workflows/release.yml` then builds a universal app on a macOS runner, signs it, smoke-tests it and publishes
-`NirTab-0.8.zip` as a GitHub release. Installed copies pick it up via Check for Updates.
+`NirTab-0.9.zip` as a GitHub release. Installed copies pick it up via Check for Updates.
 
 ### Signing
 All releases must be signed with the same certificate, otherwise every user would have to grant permissions again

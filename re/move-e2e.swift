@@ -53,6 +53,11 @@ func screen(_ r: CGRect) -> Int {
 }
 let start = screen(original)
 let vf = NSScreen.screens[start].visibleFrame
+if CommandLine.arguments.contains("--custom") {
+    press(18, control: true) // temporary ⌃⌥⌘1 → left half (set customAction1/customKey1 before running)
+    let custom = bounds(win)
+    check(abs(custom.minX - vf.minX) < 30 && abs(custom.width - vf.width / 2) < 40, "custom shortcut: \(custom)")
+}
 press(123) // left half
 let left = bounds(win)
 check(abs(left.minX - vf.minX) < 30 && abs(left.width - vf.width / 2) < 40, "left half: \(left)")
