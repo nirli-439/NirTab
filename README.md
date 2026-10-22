@@ -53,6 +53,7 @@ Order is most recently used. Minimized, hidden and windowless entries go last.
 - show hidden apps, show apps with no window
 - exclude apps by name
 - previews on/off, memory on/off, tile size
+- switcher style: default auto-fit grid, compact list, or custom grid (1–8 windows per row; limited by display width)
 - which screen the switcher opens on
 - window movement shortcuts and five custom key bindings
 - launch at login
@@ -70,6 +71,7 @@ and path, and every release keeps all three the same.
 swift re/e2e.swift    # live check: minimize → listed with preview → restored through the real switcher
 /Applications/NirTab.app/Contents/MacOS/NirTab --test-layout  # layout geometry checks
 /Applications/NirTab.app/Contents/MacOS/NirTab --test-recorder # shortcut recorder check
+/Applications/NirTab.app/Contents/MacOS/NirTab -layout list --test-styles # live layout and scroll check
 swift re/move-e2e.swift  # live check: all four halves and both display directions
 ```
 A local build has **Update (rebuild from source)** in its menu instead of Check for Updates.
@@ -77,10 +79,10 @@ A local build has **Update (rebuild from source)** in its menu instead of Check 
 ## Releasing
 Push a tag, or run the **Release** workflow by hand with a version number:
 ```bash
-git tag v0.10 && git push origin v0.10
+git tag v0.11 && git push origin v0.11
 ```
 `.github/workflows/release.yml` then builds a universal app on a macOS runner, signs it, smoke-tests it and publishes
-`NirTab-0.10.zip` as a GitHub release. Installed copies pick it up via Check for Updates.
+`NirTab-0.11.zip` as a GitHub release. Installed copies pick it up via Check for Updates.
 
 ### Signing
 All releases must be signed with the same certificate, otherwise every user would have to grant permissions again

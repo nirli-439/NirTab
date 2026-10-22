@@ -17,7 +17,8 @@ import SwiftUI
 
 let defaults = UserDefaults.standard
 defaults.register(defaults: ["hold": "cmd", "minimized": "end", "showHidden": true, "showWindowless": true,
-                             "previews": true, "size": 260.0, "screen": "mouse", "excluded": "", "memory": true])
+                             "previews": true, "size": 260.0, "screen": "mouse", "excluded": "", "memory": true,
+                             "layout": "default", "columns": 4])
 
 enum Prefs {
     static var holdMask: CGEventFlags {
@@ -33,6 +34,8 @@ enum Prefs {
     static var previews: Bool { defaults.bool(forKey: "previews") }
     static var memory: Bool { defaults.bool(forKey: "memory") }
     static var size: CGFloat { CGFloat(defaults.double(forKey: "size")) }
+    static var layout: String { defaults.string(forKey: "layout") ?? "default" }
+    static var columns: Int { max(1, min(8, defaults.integer(forKey: "columns"))) }
     static var screen: String { defaults.string(forKey: "screen") ?? "mouse" }  // mouse | main
     static var excluded: Set<String> {
         Set((defaults.string(forKey: "excluded") ?? "").split(separator: ",")
@@ -177,6 +180,9 @@ func half(_ f: CGRect, direction: Int64) -> CGRect {
     default: return CGRect(x: f.minX, y: f.minY, width: f.width, height: f.height / 2)
     }
 }
+func customColumns(_ requested: Int, count: Int, screenWidth: CGFloat) -> Int {
+    min(count, max(1, min(8, requested)), max(1, Int((screenWidth * 0.92 - 34) / 190)))
+}
 func moveFrontWindow(_ direction: Int64, toDisplay: Bool) {
     guard let app = NSWorkspace.shared.frontmostApplication, app.processIdentifier != getpid(),
           let main = NSScreen.screens.first else { return }
@@ -234,6 +240,9 @@ if CommandLine.arguments.contains("--test-layout") {
     precondition(half(displays[0], direction: 124) == CGRect(x: 500, y: 0, width: 500, height: 800))
     precondition(half(displays[0], direction: 126) == CGRect(x: 0, y: 400, width: 1000, height: 400))
     precondition(half(displays[0], direction: 125) == CGRect(x: 0, y: 0, width: 1000, height: 400))
+    precondition(customColumns(3, count: 8, screenWidth: 1920) == 3)
+    precondition(customColumns(8, count: 8, screenWidth: 400) == 1)
+    precondition(customColumns(8, count: 2, screenWidth: 1920) == 2)
     precondition(flipY(flipY(CGRect(x: -800, y: 50, width: 400, height: 300), mainTop: 800), mainTop: 800) == CGRect(x: -800, y: 50, width: 400, height: 300))
     let test = UserDefaults(suiteName: "nirtab-shortcut-test-\(UUID())")!
     test.set("left", forKey: "customAction1")
@@ -462,6 +471,7 @@ final class Switcher {
     let panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
     let fx = NSVisualEffectView()
     let grid = NSStackView()
+    let scroll = NSScrollView()
     var wins: [Win] = []
     var tiles: [Tile] = []
     var previews: [CGWindowID: NSImageView] = [:]
@@ -502,7 +512,11 @@ final class Switcher {
         grid.alignment = .centerX
         grid.spacing = 10
         grid.edgeInsets = NSEdgeInsets(top: 22, left: 22, bottom: 16, right: 22)
-        for v in [tint, grid] {
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.documentView = grid
+        for v in [tint, scroll] {
             v.translatesAutoresizingMaskIntoConstraints = false
             fx.addSubview(v)
             NSLayoutConstraint.activate([
@@ -554,9 +568,11 @@ final class Switcher {
             ctx.duration = 0.12
             panel.animator().alphaValue = 1
         }
-        captureThumbs(live.subtracting([0])) { [weak self] wid, img in
-            self?.previews[wid]?.image = NSImage(cgImage: img, size: .zero)
-            self?.previewIcons[wid]?.isHidden = true
+        if Prefs.layout != "list" {
+            captureThumbs(live.subtracting([0])) { [weak self] wid, img in
+                self?.previews[wid]?.image = NSImage(cgImage: img, size: .zero)
+                self?.previewIcons[wid]?.isHidden = true
+            }
         }
     }
 
@@ -577,15 +593,21 @@ final class Switcher {
         let mouseScreen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) }
         let screen = Prefs.screen == "main" ? NSScreen.screens[0] : (mouseScreen ?? NSScreen.screens[0])
         let f = screen.visibleFrame
-        // Shrink tiles until everything fits on screen (AltTab does the same).
-        tileW = Prefs.size
+        // Default retains auto-fitting; custom fixes the requested column count unless the display is too narrow.
+        tileW = Prefs.layout == "list" ? min(600, f.width * 0.86) : Prefs.size
         var cols = 1
-        while true {
-            cols = max(1, min(wins.count, Int((f.width * 0.92 - 44) / (tileW + 10))))
-            let rows = (wins.count + cols - 1) / cols
-            if CGFloat(rows) * (thumbH + 70) + 80 <= f.height * 0.9 || tileW <= 120 { break }
-            tileW -= 10
+        if Prefs.layout == "custom" {
+            cols = customColumns(Prefs.columns, count: wins.count, screenWidth: f.width)
+            tileW = min(tileW, (f.width * 0.92 - 44 - CGFloat(cols - 1) * 10) / CGFloat(cols))
+        } else if Prefs.layout != "list" {
+            while true {
+                cols = max(1, min(wins.count, Int((f.width * 0.92 - 44) / (tileW + 10))))
+                let rows = (wins.count + cols - 1) / cols
+                if CGFloat(rows) * (thumbH + 70) + 80 <= f.height * 0.9 || tileW <= 200 { break }
+                tileW -= 10
+            }
         }
+        grid.spacing = Prefs.layout == "list" ? 6 : 10
         grid.arrangedSubviews.forEach { $0.removeFromSuperview() }
         previews = [:]
         previewIcons = [:]
@@ -595,17 +617,23 @@ final class Switcher {
             row.spacing = 10
             grid.addArrangedSubview(row)
         }
-        grid.addArrangedSubview(hints())
+        grid.addArrangedSubview(hints(columns: cols))
         grid.setCustomSpacing(16, after: grid.arrangedSubviews[grid.arrangedSubviews.count - 2])
         highlight()
-        let size = fx.fittingSize
+        let content = grid.fittingSize
+        grid.frame = CGRect(origin: .zero, size: content)
+        let size = CGSize(width: content.width, height: min(content.height, f.height * 0.9))
         panel.setFrame(NSRect(x: f.midX - size.width / 2, y: f.midY - size.height / 2, width: size.width, height: size.height), display: true)
+        if tiles.indices.contains(sel) { grid.scrollToVisible(tiles[sel].convert(tiles[sel].bounds, to: grid)) }
     }
 
     // Key hints under the cards, like a keyboard legend.
-    func hints() -> NSView {
+    func hints(columns: Int) -> NSView {
         let hold = ["opt": "⌥", "ctrl": "⌃"][defaults.string(forKey: "hold") ?? ""] ?? "⌘"
-        let items = [("\(hold)⇥", "Next"), ("W", "Close"), ("M", "Minimize"), ("F", "Maximize"), ("H", "Hide"), ("Q", "Quit"), ("⇧Q", "Force quit"), ("esc", "Cancel")]
+        let items = columns == 1 && Prefs.layout != "list" ? [("\(hold)⇥", "Next"), ("esc", "Cancel")]
+            : Prefs.layout == "list" || columns == 2
+            ? [("\(hold)⇥", "Next"), ("W", "Close"), ("⇧Q", "Force quit"), ("esc", "Cancel")]
+            : [("\(hold)⇥", "Next"), ("W", "Close"), ("M", "Minimize"), ("F", "Maximize"), ("H", "Hide"), ("Q", "Quit"), ("⇧Q", "Force quit"), ("esc", "Cancel")]
         let views = items.map { k, t -> NSView in
             let l = NSTextField(labelWithString: t)
             l.font = .systemFont(ofSize: 10.5, weight: .medium)
@@ -654,9 +682,45 @@ final class Switcher {
             m.toolTip = "\(name) uses \(formatBytes(bytes)), helper processes included"
             header.append(m)
         }
+        let status = w.ax == nil ? ("plus.rectangle.on.rectangle", "No windows") : w.minimized ? ("arrow.down.right.and.arrow.up.left", "Minimized")
+            : w.app.isHidden ? ("eye.slash", "Hidden") : nil
+        if Prefs.layout == "list", let (symbol, text) = status {
+            header.append(pill(text, symbol: symbol, fg: .white, bg: NSColor.black.withAlphaComponent(0.6)))
+        }
         let top = NSStackView(views: header)
         top.spacing = 8
         top.widthAnchor.constraint(equalToConstant: tileW - 20).isActive = true
+
+        var acts: [NSView] = []
+        if w.ax != nil {
+            acts.append(ClosureButton(symbol: "xmark", tip: "Close window (W)", color: .systemRed) { [weak self] in self?.act(13, at: i) })
+            acts.append(w.minimized
+                ? ClosureButton(symbol: "arrow.up", tip: "Restore (M)", color: .systemYellow) { [weak self] in self?.act(46, at: i) }
+                : ClosureButton(symbol: "minus", tip: "Minimize (M)", color: .systemYellow) { [weak self] in self?.act(46, at: i) })
+            acts.append(ClosureButton(symbol: "arrow.up.left.and.arrow.down.right", tip: "Maximize / restore size (F)", color: .systemGreen) { [weak self] in self?.act(3, at: i) })
+        }
+        acts.append(ClosureButton(symbol: "power", tip: "Quit \(name) (Q)", color: NSColor(white: 0.42, alpha: 1)) { [weak self] in self?.act(12, at: i) })
+        let forceQuit = ClosureButton(symbol: "bolt.fill", tip: "Force quit \(name) (⇧Q) — unsaved work is lost", color: .systemRed, size: 30) { [weak self] in self?.act(12, at: i, force: true) }
+        let row = NSStackView(views: acts)
+        row.spacing = 6
+        let buttons = NSStackView(views: Prefs.layout == "list" ? [row, forceQuit] : [row, NSView(), forceQuit])
+        buttons.spacing = 6
+        buttons.isHidden = true
+        if Prefs.layout == "list" {
+            top.addArrangedSubview(NSView())
+            top.addArrangedSubview(buttons)
+            let t = Tile(views: [top])
+            t.setup()
+            t.buttons = buttons
+            t.edgeInsets = NSEdgeInsets(top: 10, left: 10, bottom: 10, right: 10)
+            t.widthAnchor.constraint(equalToConstant: tileW).isActive = true
+            t.onHover = { [weak self] in
+                guard let self, NSEvent.mouseLocation != self.mouseAtShow, self.sel != i else { return }
+                self.sel = i; self.highlight()
+            }
+            t.onClick = { [weak self] in self?.sel = i; self?.open = false; self?.commit() }
+            return t
+        }
 
         // Preview area
         let box = NSView()
@@ -690,30 +754,12 @@ final class Switcher {
         bigIcon.alphaValue = dim
         var overlays: [(NSView, Bool)] = [(preview, false)]  // (view, pinned top-right instead of filling)
 
-        let status = w.ax == nil ? ("plus.rectangle.on.rectangle", "No windows") : w.minimized ? ("arrow.down.right.and.arrow.up.left", "Minimized")
-            : w.app.isHidden ? ("eye.slash", "Hidden") : nil
         var chip: NSView?
         if let (symbol, text) = status {
             chip = pill(text, symbol: symbol, fg: .white, bg: NSColor.black.withAlphaComponent(0.6))
         }
 
-        // Put the destructive action above the other hover controls, away from Close and Quit.
-        var acts: [NSView] = []
-        if w.ax != nil {
-            acts.append(ClosureButton(symbol: "xmark", tip: "Close window (W)", color: .systemRed) { [weak self] in self?.act(13, at: i) })
-            acts.append(w.minimized
-                ? ClosureButton(symbol: "arrow.up", tip: "Restore (M)", color: .systemYellow) { [weak self] in self?.act(46, at: i) }
-                : ClosureButton(symbol: "minus", tip: "Minimize (M)", color: .systemYellow) { [weak self] in self?.act(46, at: i) })
-            acts.append(ClosureButton(symbol: "arrow.up.left.and.arrow.down.right", tip: "Maximize / restore size (F)", color: .systemGreen) { [weak self] in self?.act(3, at: i) })
-        }
-        acts.append(ClosureButton(symbol: "power", tip: "Quit \(name) (Q)", color: NSColor(white: 0.42, alpha: 1)) { [weak self] in self?.act(12, at: i) })
-        let forceQuit = ClosureButton(symbol: "bolt.fill", tip: "Force quit \(name) (⇧Q) — unsaved work is lost", color: .systemRed, size: 30) { [weak self] in self?.act(12, at: i, force: true) }
-        let row = NSStackView(views: acts)
-        row.spacing = 6
-        let buttons = NSStackView(views: [row, NSView(), forceQuit])
-        buttons.spacing = 6
         buttons.widthAnchor.constraint(equalToConstant: tileW - 36).isActive = true
-        buttons.isHidden = true
         overlays.append((buttons, true))
 
         for (v, corner) in overlays {
@@ -755,7 +801,12 @@ final class Switcher {
     func highlight() { for (i, t) in tiles.enumerated() { t.isSelected = i == sel } }
 
     var selected: Win? { wins.indices.contains(sel) ? wins[sel] : nil }
-    func move(_ d: Int) { guard !wins.isEmpty else { return }; sel = (sel + d + wins.count) % wins.count; highlight() }
+    func move(_ d: Int) {
+        guard !wins.isEmpty else { return }
+        sel = (sel + d + wins.count) % wins.count
+        highlight()
+        grid.scrollToVisible(tiles[sel].convert(tiles[sel].bounds, to: grid))
+    }
     func commit() { panel.orderOut(nil); if let w = selected { focus(w) }; wins = [] }
     func cancel() { panel.orderOut(nil); wins = [] }
 
@@ -1064,6 +1115,8 @@ struct SettingsView: View {
     @AppStorage("previews") var previews = true
     @AppStorage("memory") var memory = true
     @AppStorage("size") var size = 260.0
+    @AppStorage("layout") var layout = "default"
+    @AppStorage("columns") var columns = 4
     @AppStorage("screen") var screen = "mouse"
     @AppStorage("excluded") var excluded = ""
 
@@ -1132,6 +1185,15 @@ struct SettingsView: View {
                     TextField(text: $excluded, prompt: Text("Finder, Slack")) { rowLabel("Exclude apps", "nosign", .red) }
                 }
                 Section("Appearance") {
+                    Picker(selection: $layout) {
+                        Text("Default grid").tag("default"); Text("List").tag("list"); Text("Custom grid").tag("custom")
+                    } label: { rowLabel("Switcher style", "square.grid.2x2", .indigo) }
+                    if layout == "custom" {
+                        Stepper(value: $columns, in: 1...8) {
+                            rowLabel("Windows per row: \(columns)", "rectangle.split.3x1", .purple)
+                        }
+                        Text("Uses fewer columns if the display is too narrow.").font(.caption).foregroundStyle(.secondary)
+                    }
                     Toggle(isOn: $previews) { rowLabel("Window previews", "photo.on.rectangle", .pink) }
                     Toggle(isOn: $memory) { rowLabel("Show app memory", "memorychip", .green) }
                     LabeledContent {
@@ -1183,6 +1245,32 @@ func openSettings() {
 
 // Debug: render the switcher and Settings to PNGs without showing them (layout checks, screenshots).
 // --snapshot <prefix> [--demo]: --demo uses made-up windows (no real titles/previews) for public screenshots.
+if CommandLine.arguments.contains("--test-styles") {
+    _ = NSApplication.shared
+    guard let sample = listWindows().first else { print("no windows to test"); exit(1) }
+    let s = Switcher()
+    s.wins = Array(repeating: sample, count: 24)
+    s.open = true
+    s.render()
+    s.panel.orderFrontRegardless()
+    s.panel.displayIfNeeded()
+    let first = s.scroll.contentView.bounds.origin.y
+    s.move(23)
+    s.panel.displayIfNeeded()
+    let last = s.scroll.contentView.bounds.origin.y
+    precondition(s.panel.frame.height <= NSScreen.screens.map(\.visibleFrame.height).max()! * 0.9 + 1)
+    if Prefs.layout == "list" {
+        precondition(s.grid.arrangedSubviews.count == 25 && s.tiles.allSatisfy { $0.arrangedSubviews.count == 1 })
+    } else if Prefs.layout == "custom" {
+        let cols = customColumns(Prefs.columns, count: 24, screenWidth: (s.panel.screen ?? NSScreen.screens[0]).visibleFrame.width)
+        precondition(s.grid.arrangedSubviews.count - 1 == (24 + cols - 1) / cols)
+    }
+    if s.grid.frame.height > s.panel.frame.height + 1 {
+        precondition(first != last, "keyboard selection must scroll to the last window")
+    }
+    print("styles PASS: \(Prefs.layout), \(s.grid.arrangedSubviews.count - 1) rows, scroll \(first) → \(last)")
+    exit(0)
+}
 if let i = CommandLine.arguments.firstIndex(of: "--snapshot") {
     _ = NSApplication.shared
     let out = CommandLine.arguments.count > i + 1 && !CommandLine.arguments[i + 1].hasPrefix("--") ? CommandLine.arguments[i + 1] : "/tmp/nirtab"
