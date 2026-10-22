@@ -7,7 +7,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 RELEASE=0; [ "${1:-}" = "--release" ] && RELEASE=1
 APP=NirTab.app
-VERSION=${VERSION:-0.12}
+VERSION=${VERSION:-0.13}
 BUILD=$(date +%Y%m%d.%H%M)
 ID="NirTab Signing"   # self-signed code-signing cert; see README "Signing"
 MIN=14.0              # ScreenCaptureKit screenshots need macOS 14
@@ -16,11 +16,11 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 if [ $RELEASE = 1 ]; then
   for arch in arm64 x86_64; do
-    swiftc -O -swift-version 5 -target $arch-apple-macos$MIN main.swift -o "/tmp/NirTab-$arch"
+    swiftc -O -swift-version 5 -target $arch-apple-macos$MIN main.swift extras.swift -o "/tmp/NirTab-$arch"
   done
   lipo -create /tmp/NirTab-arm64 /tmp/NirTab-x86_64 -output "$APP/Contents/MacOS/NirTab"
 else
-  swiftc -O -swift-version 5 -target "$(uname -m)-apple-macos$MIN" main.swift -o "$APP/Contents/MacOS/NirTab"  # fails → old app keeps running
+  swiftc -O -swift-version 5 -target "$(uname -m)-apple-macos$MIN" main.swift extras.swift -o "$APP/Contents/MacOS/NirTab"  # fails → old app keeps running
 fi
 cp icons/AppIcon.icns "$APP/Contents/Resources/"
 SOURCE_KEY=""

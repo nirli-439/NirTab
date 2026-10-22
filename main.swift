@@ -4,6 +4,7 @@
 // Release the hold key to switch (restores minimized/hidden), Esc to cancel.
 import AppKit
 import ApplicationServices
+import Combine
 import ImageIO
 import ScreenCaptureKit
 import ServiceManagement
@@ -20,7 +21,7 @@ import UniformTypeIdentifiers
 let defaults = UserDefaults.standard
 defaults.register(defaults: ["hold": "cmd", "minimized": "end", "showHidden": true, "showWindowless": true,
                              "previews": true, "size": 260.0, "screen": "mouse", "excluded": "", "memory": true,
-                             "layout": "default", "columns": 4])
+                             "layout": "default", "columns": 4, "focusMinutes": 25, "breakMinutes": 5])
 
 enum Prefs {
     static var holdMask: CGEventFlags {
@@ -1151,6 +1152,8 @@ struct SettingsView: View {
     @AppStorage("screen") var screen = "mouse"
     @AppStorage("excluded") var excluded = ""
     @AppStorage("backgroundInstalled") var hasBackground = false
+    @AppStorage("focusMinutes") var focusMinutes = 25
+    @AppStorage("breakMinutes") var breakMinutes = 5
 
     func chooseBackground() {
         let picker = NSOpenPanel()
@@ -1259,6 +1262,12 @@ struct SettingsView: View {
                         Text("Screen with the mouse").tag("mouse"); Text("Main screen").tag("main")
                     } label: { rowLabel("Show on", "display", .blue) }
                 }
+                Section("Experimental features") {
+                    Text("Enable Clipboard history and Pomodoro from the menu bar. Clipboard history is stored unencrypted in Documents/NirTab.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Stepper("Focus: \(focusMinutes) minutes", value: $focusMinutes, in: 1...180)
+                    Stepper("Break: \(breakMinutes) minutes", value: $breakMinutes, in: 1...60)
+                }
                 Section("General") {
                     Toggle(isOn: Binding(get: { SMAppService.mainApp.status == .enabled }, set: { on in
                         let s = SMAppService.mainApp
@@ -1301,6 +1310,7 @@ func openSettings() {
 
 // Debug: render the switcher and Settings to PNGs without showing them (layout checks, screenshots).
 // --snapshot <prefix> [--demo]: --demo uses made-up windows (no real titles/previews) for public screenshots.
+if CommandLine.arguments.contains("--test-extras") { _ = NSApplication.shared; testExtras(); exit(0) }
 if CommandLine.arguments.contains("--test-styles") {
     _ = NSApplication.shared
     guard let sample = listWindows().first else { print("no windows to test"); exit(1) }
@@ -1612,6 +1622,13 @@ let callback: CGEventTapCallBack = { _, type, event, _ in
         if type == .keyDown { DispatchQueue.main.async { performWindowAction(action) } }
         return nil
     }
+    if !switcher.open && defaults.bool(forKey: "clipboardEnabled") && code == 9 && modifiers == [.maskAlternate, .maskCommand]
+        && (type == .keyDown || type == .keyUp) {
+        if type == .keyDown && event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
+            DispatchQueue.main.async { openClipboard() }
+        }
+        return nil
+    }
     if !switcher.open && [123, 124, 125, 126].contains(code),
        modifiers == [.maskAlternate, .maskCommand] || modifiers == [.maskControl, .maskAlternate, .maskCommand] {
         if type == .keyDown {
@@ -1700,6 +1717,16 @@ final class MenuBar: NSObject, NSMenuDelegate {
         let login = add(menu, "Launch at Login", #selector(toggleLogin))
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
         menu.addItem(.separator())
+        let experimental = NSMenu()
+        let clips = add(experimental, "Clipboard history (⌥⌘V)", #selector(toggleClipboard))
+        clips.state = defaults.bool(forKey: "clipboardEnabled") ? .on : .off
+        if clips.state == .on { add(experimental, "Open Clipboard History…", #selector(showClipboard)) }
+        let timer = add(experimental, "Pomodoro timer", #selector(togglePomodoro))
+        timer.state = defaults.bool(forKey: "pomodoroEnabled") ? .on : .off
+        let group = NSMenuItem(title: "Experimental Features", action: nil, keyEquivalent: "")
+        group.submenu = experimental
+        menu.addItem(group)
+        menu.addItem(.separator())
         add(menu, sourceDir != nil ? "Update (rebuild from source)" : "Check for Updates…", #selector(update))
         add(menu, "Restart NirTab", #selector(restart))
         add(menu, "Quit NirTab", #selector(quit), key: "q")
@@ -1715,6 +1742,9 @@ final class MenuBar: NSObject, NSMenuDelegate {
 
     @objc func settings() { openSettings() }
     @objc func setup() { openSetup() }
+    @objc func showClipboard() { openClipboard() }
+    @objc func toggleClipboard() { clipboard.setEnabled(!defaults.bool(forKey: "clipboardEnabled")) }
+    @objc func togglePomodoro() { pomodoro.setEnabled(!defaults.bool(forKey: "pomodoroEnabled")) }
     @objc func toggleLogin() {
         let s = SMAppService.mainApp
         do { try s.status == .enabled ? s.unregister() : s.register() } catch { NSSound.beep(); print("NirTab: login item: \(error)") }
@@ -1733,6 +1763,8 @@ app.setActivationPolicy(.accessory)
 for other in NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "") where other != .current { other.forceTerminate() }
 
 let menuBar = MenuBar()
+if defaults.bool(forKey: "clipboardEnabled") { clipboard.setEnabled(true) }
+if defaults.bool(forKey: "pomodoroEnabled") { pomodoro.setEnabled(true) }
 menuBar.working = menuBar.ax && startTap()
 if !menuBar.ax {
     _ = AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary)
@@ -1771,6 +1803,28 @@ if CommandLine.arguments.contains("--test-tap-recovery") {
     DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
         let ok = CGEvent.tapIsEnabled(tap: tap)
         print("tap recovery \(ok ? "PASS" : "FAIL")")
+        exit(ok ? 0 : 1)
+    }
+}
+
+if CommandLine.arguments.contains("--test-pomodoro-ui") {
+    let menu = menuBar.item.menu!
+    menuBar.menuNeedsUpdate(menu)
+    let options = menu.item(withTitle: "Experimental Features")?.submenu
+    guard options?.item(withTitle: "Clipboard history (⌥⌘V)") != nil,
+          options?.item(withTitle: "Pomodoro timer") != nil else { print("experimental menu FAIL"); exit(1) }
+    menuBar.toggleClipboard()
+    precondition(defaults.bool(forKey: "clipboardEnabled") && clipboard.timer != nil)
+    menuBar.toggleClipboard()
+    precondition(!defaults.bool(forKey: "clipboardEnabled") && clipboard.timer == nil)
+    pomodoro.setEnabled(true)
+    pomodoro.startFocus()
+    pomodoro.deadline = Date().addingTimeInterval(-1)
+    DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+        pomodoro.tick()
+        let ok = pomodoro.phase == "break" && pomodoro.item?.button?.image != nil && pomodoro.popup?.isVisible == true
+        print("pomodoro popup \(ok ? "PASS" : "FAIL")")
+        pomodoro.setEnabled(false)
         exit(ok ? 0 : 1)
     }
 }

@@ -40,6 +40,14 @@ An arrow with no display in that direction does nothing. Some macOS apps do not 
 then press ⌘, ⌥ or ⌃ (optionally ⇧) plus a key. Changes work immediately. **Clear** disables a slot.
 Custom shortcuts override the built-in window movement shortcuts; if two slots use the same keys, the first wins.
 
+**Experimental features** (menu bar → Experimental Features, both off by default):
+- **Clipboard history**: ⌥⌘V shows copied text, images/media and file references. Copy an entry back to the clipboard,
+  pin it, or delete it. Up to 50 recent and 20 pinned items (16 MB per capture). Stored **unencrypted** in
+  `~/Documents/NirTab/Clipboard/`; file entries reference the original file, rather than duplicating it.
+  Disabling stops capture but keeps saved history until you delete it.
+- **Pomodoro**: a second menu-bar icon shows the countdown. Start/pause/reset focus sessions or start a break from its
+  menu. A coffee popup appears when focus ends and the break timer starts. Configure focus/break minutes in Settings.
+
 **Tiles show:**
 - a window preview, plus the last picture taken of minimized windows
 - the app's memory, counting its helper processes the way Activity Monitor does (orange at 2 GB or more)
@@ -73,6 +81,7 @@ swift re/e2e.swift    # live check: minimize → listed with preview → restore
 /Applications/NirTab.app/Contents/MacOS/NirTab --test-layout  # layout geometry checks
 /Applications/NirTab.app/Contents/MacOS/NirTab --test-recorder # shortcut recorder check
 /Applications/NirTab.app/Contents/MacOS/NirTab --test-background # image import/resize check
+/Applications/NirTab.app/Contents/MacOS/NirTab --test-extras # clipboard and timer checks
 /Applications/NirTab.app/Contents/MacOS/NirTab -layout list --test-styles # live layout and scroll check
 swift re/move-e2e.swift  # live check: all four halves and both display directions
 ```
@@ -81,10 +90,10 @@ A local build has **Update (rebuild from source)** in its menu instead of Check 
 ## Releasing
 Push a tag, or run the **Release** workflow by hand with a version number:
 ```bash
-git tag v0.12 && git push origin v0.12
+git tag v0.13 && git push origin v0.13
 ```
 `.github/workflows/release.yml` then builds a universal app on a macOS runner, signs it, smoke-tests it and publishes
-`NirTab-0.12.zip` as a GitHub release. Installed copies pick it up via Check for Updates.
+`NirTab-0.13.zip` as a GitHub release. Installed copies pick it up via Check for Updates.
 
 ### Signing
 All releases must be signed with the same certificate, otherwise every user would have to grant permissions again
