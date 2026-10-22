@@ -7,7 +7,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 RELEASE=0; [ "${1:-}" = "--release" ] && RELEASE=1
 APP=NirTab.app
-VERSION=${VERSION:-0.7}
+VERSION=${VERSION:-0.8}
 BUILD=$(date +%Y%m%d.%H%M)
 ID="NirTab Signing"   # self-signed code-signing cert; see README "Signing"
 MIN=14.0              # ScreenCaptureKit screenshots need macOS 14

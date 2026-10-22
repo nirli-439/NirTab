@@ -32,6 +32,10 @@ Requires macOS 14 or later, Apple Silicon or Intel. Quit other ⌘Tab tools such
 **Mouse:** hover a tile to select it and show its buttons (close, minimize/restore, maximize, quit, force quit).
 Click a tile to switch to it.
 
+**Move the front window:** ⌥⌘ + ←/→/↑/↓ snaps it to the left/right/top/bottom half of its display.
+⌃⌥⌘ + an arrow sends it to the nearest display in that direction, keeping its size and relative position where possible.
+An arrow with no display in that direction does nothing. Some macOS apps do not allow their windows to be moved or resized.
+
 **Tiles show:**
 - a window preview, plus the last picture taken of minimized windows
 - the app's memory, counting its helper processes the way Activity Monitor does (orange at 2 GB or more)
@@ -46,6 +50,7 @@ Order is most recently used. Minimized, hidden and windowless entries go last.
 - exclude apps by name
 - previews on/off, memory on/off, tile size
 - which screen the switcher opens on
+- window movement shortcuts (shown in Settings)
 - launch at login
 
 ## Updates
@@ -59,16 +64,18 @@ and path, and every release keeps all three the same.
 ./build.sh --release  # universal build + NirTab-<version>.zip (what CI runs)
 /Applications/NirTab.app/Contents/MacOS/NirTab --list     # what the switcher would show, with memory and previews
 swift re/e2e.swift    # live check: minimize → listed with preview → restored through the real switcher
+/Applications/NirTab.app/Contents/MacOS/NirTab --test-layout  # layout geometry checks
+swift re/move-e2e.swift  # live check: all four halves and both display directions
 ```
 A local build has **Update (rebuild from source)** in its menu instead of Check for Updates.
 
 ## Releasing
 Push a tag, or run the **Release** workflow by hand with a version number:
 ```bash
-git tag v0.7 && git push origin v0.7
+git tag v0.8 && git push origin v0.8
 ```
 `.github/workflows/release.yml` then builds a universal app on a macOS runner, signs it, smoke-tests it and publishes
-`NirTab-0.7.zip` as a GitHub release. Installed copies pick it up via Check for Updates.
+`NirTab-0.8.zip` as a GitHub release. Installed copies pick it up via Check for Updates.
 
 ### Signing
 All releases must be signed with the same certificate, otherwise every user would have to grant permissions again

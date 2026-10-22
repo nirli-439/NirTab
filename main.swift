@@ -144,6 +144,77 @@ func toggleMaximize(_ w: Win) {
     }
 }
 
+// AX coordinates have a top-left origin; AppKit screens have a bottom-left origin.
+func flipY(_ r: CGRect, mainTop: CGFloat) -> CGRect {
+    CGRect(x: r.minX, y: mainTop - r.maxY, width: r.width, height: r.height)
+}
+func screenIndex(for window: CGRect, in screens: [CGRect]) -> Int {
+    screens.indices.max { a, b in
+        let x = window.intersection(screens[a]), y = window.intersection(screens[b])
+        return (x.isNull ? 0 : x.width * x.height) < (y.isNull ? 0 : y.width * y.height)
+    } ?? 0
+}
+func nextScreen(_ source: Int, direction: Int64, in screens: [CGRect]) -> Int? {
+    let a = screens[source]
+    return screens.indices.filter { i in
+        let b = screens[i]
+        switch direction {
+        case 123: return b.midX < a.midX && abs(b.midX - a.midX) > abs(b.midY - a.midY)
+        case 124: return b.midX > a.midX && abs(b.midX - a.midX) > abs(b.midY - a.midY)
+        case 126: return b.midY > a.midY && abs(b.midY - a.midY) >= abs(b.midX - a.midX)
+        default: return b.midY < a.midY && abs(b.midY - a.midY) >= abs(b.midX - a.midX)
+        }
+    }.min { i, j in
+        let x = screens[i], y = screens[j]
+        return hypot(x.midX - a.midX, x.midY - a.midY) < hypot(y.midX - a.midX, y.midY - a.midY)
+    }
+}
+func half(_ f: CGRect, direction: Int64) -> CGRect {
+    switch direction {
+    case 123: return CGRect(x: f.minX, y: f.minY, width: f.width / 2, height: f.height)
+    case 124: return CGRect(x: f.midX, y: f.minY, width: f.width / 2, height: f.height)
+    case 126: return CGRect(x: f.minX, y: f.midY, width: f.width, height: f.height / 2)
+    default: return CGRect(x: f.minX, y: f.minY, width: f.width, height: f.height / 2)
+    }
+}
+func moveFrontWindow(_ direction: Int64, toDisplay: Bool) {
+    guard let app = NSWorkspace.shared.frontmostApplication, app.processIdentifier != getpid(),
+          let main = NSScreen.screens.first else { return }
+    let axApp = AXUIElementCreateApplication(app.processIdentifier)
+    AXUIElementSetMessagingTimeout(axApp, 0.2)
+    guard let win: AXUIElement = attr(axApp, kAXFocusedWindowAttribute) ?? attr(axApp, kAXMainWindowAttribute),
+          let r = frame(win) else { return }
+    let screens = NSScreen.screens.map(\.frame)
+    let visible = NSScreen.screens.map(\.visibleFrame)
+    let current = flipY(r, mainTop: main.frame.maxY)
+    let index = screenIndex(for: current, in: screens)
+    if toDisplay {
+        guard let dest = nextScreen(index, direction: direction, in: screens) else { return }
+        let from = visible[index], to = visible[dest]
+        let w = min(current.width, to.width), h = min(current.height, to.height)
+        let x = to.minX + (to.width - w) * max(0, min(1, (current.minX - from.minX) / max(1, from.width - current.width)))
+        let y = to.minY + (to.height - h) * max(0, min(1, (current.minY - from.minY) / max(1, from.height - current.height)))
+        setFrame(win, flipY(CGRect(x: x, y: y, width: w, height: h), mainTop: main.frame.maxY))
+    } else {
+        setFrame(win, flipY(half(visible[index], direction: direction), mainTop: main.frame.maxY))
+    }
+}
+
+if CommandLine.arguments.contains("--test-layout") {
+    let displays = [CGRect(x: 0, y: 0, width: 1000, height: 800), CGRect(x: -1200, y: 0, width: 1200, height: 900)]
+    precondition(nextScreen(0, direction: 123, in: displays) == 1)
+    precondition(nextScreen(1, direction: 124, in: displays) == 0)
+    precondition(nextScreen(0, direction: 124, in: displays) == nil)
+    precondition(screenIndex(for: CGRect(x: -1100, y: 100, width: 400, height: 400), in: displays) == 1)
+    precondition(half(displays[0], direction: 123) == CGRect(x: 0, y: 0, width: 500, height: 800))
+    precondition(half(displays[0], direction: 124) == CGRect(x: 500, y: 0, width: 500, height: 800))
+    precondition(half(displays[0], direction: 126) == CGRect(x: 0, y: 400, width: 1000, height: 400))
+    precondition(half(displays[0], direction: 125) == CGRect(x: 0, y: 0, width: 1000, height: 400))
+    precondition(flipY(flipY(CGRect(x: -800, y: 50, width: 400, height: 300), mainTop: 800), mainTop: 800) == CGRect(x: -800, y: 50, width: 400, height: 300))
+    print("layout PASS")
+    exit(0)
+}
+
 // Memory per app, counting its helper processes (Chrome tabs, Electron renderers, XPC services) like Activity Monitor.
 // macOS has no per-window memory: one app process draws all its windows. ~15 ms for ~850 processes measured here.
 func appMemory() -> [pid_t: UInt64] {
@@ -914,6 +985,10 @@ struct SettingsView: View {
                     }
                     .padding(.vertical, 4)
                 }
+                Section("Move front window") {
+                    LabeledContent("Between displays") { Text("⌃⌥⌘ + ← → ↑ ↓").font(.callout) }
+                    LabeledContent("Left / right / top / bottom half") { Text("⌥⌘ + ← → ↑ ↓").font(.callout) }
+                }
                 Section("Windows") {
                     Picker(selection: $minimized) {
                         Text("Show in order").tag("show"); Text("Show at the end").tag("end"); Text("Don't show").tag("hide")
@@ -1236,6 +1311,15 @@ let callback: CGEventTapCallBack = { _, type, event, _ in
     }
     let code = event.getIntegerValueField(.keyboardEventKeycode)
     let held = event.flags.contains(Prefs.holdMask)
+    let modifiers = event.flags.intersection([.maskControl, .maskAlternate, .maskCommand, .maskShift])
+    if !switcher.open && [123, 124, 125, 126].contains(code),
+       modifiers == [.maskAlternate, .maskCommand] || modifiers == [.maskControl, .maskAlternate, .maskCommand] {
+        if type == .keyDown {
+            let display = modifiers.contains(.maskControl)
+            DispatchQueue.main.async { moveFrontWindow(code, toDisplay: display) }
+        }
+        if type == .keyDown || type == .keyUp { return nil }
+    }
     // State flips here, synchronously; heavy AX work goes to the next runloop turn so the tap never times out.
     switch type {
     case .keyDown where code == 48 && held:  // hold+Tab
