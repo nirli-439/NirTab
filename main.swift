@@ -23,7 +23,8 @@ defaults.register(defaults: ["hold": "cmd", "minimized": "end", "showHidden": tr
                              "previews": true, "size": 260.0, "screen": "mouse", "excluded": "", "memory": true,
                              "layout": "default", "columns": 4, "focusMinutes": 25, "breakMinutes": 5,
                              "rectangleGap": 0.0, "rectangleMaxPerRow": 3, "rectangleMaxPerColumn": 3,
-                             "rectangleWidth": 1100, "rectangleHeight": 700, "rectangleIgnored": ""])
+                             "rectangleWidth": 1100, "rectangleHeight": 700, "rectangleIgnored": "",
+                             "autoCopyScreenshots": true])
 
 enum Prefs {
     static var holdMask: CGEventFlags {
@@ -1176,6 +1177,8 @@ struct SettingsView: View {
     @AppStorage("backgroundInstalled") var hasBackground = false
     @AppStorage("focusMinutes") var focusMinutes = 25
     @AppStorage("breakMinutes") var breakMinutes = 5
+    @AppStorage("clipboardEnabled") var clipboardEnabled = false
+    @AppStorage("autoCopyScreenshots") var autoCopyScreenshots = true
     @AppStorage("rectangleSpectacle") var rectangleSpectaclePreset = false
     @AppStorage("rectangleGap") var rectangleGap = 0.0
     @AppStorage("rectangleDragSnap") var rectangleDragSnap = false
@@ -1316,6 +1319,10 @@ struct SettingsView: View {
                 Section("Experimental features") {
                     Text("Enable Clipboard history and Pomodoro from the menu bar. Clipboard history is stored unencrypted in Documents/NirTab.")
                         .font(.caption).foregroundStyle(.secondary)
+                    Toggle("Copy screenshots to clipboard and history (⌘⇧3 / ⌘⇧4)", isOn: $autoCopyScreenshots)
+                        .disabled(!clipboardEnabled)
+                    Text("When Clipboard history is on, screenshots go to Documents/NirTab instead of being saved on the Desktop.")
+                        .font(.caption).foregroundStyle(.secondary)
                     Stepper("Focus: \(focusMinutes) minutes", value: $focusMinutes, in: 1...180)
                     Stepper("Break: \(breakMinutes) minutes", value: $breakMinutes, in: 1...60)
                 }
@@ -1361,7 +1368,17 @@ func openSettings() {
 
 // Debug: render the switcher and Settings to PNGs without showing them (layout checks, screenshots).
 // --snapshot <prefix> [--demo]: --demo uses made-up windows (no real titles/previews) for public screenshots.
-if CommandLine.arguments.contains("--test-extras") { _ = NSApplication.shared; testExtras(); exit(0) }
+if CommandLine.arguments.contains("--test-extras") {
+    _ = NSApplication.shared
+    testExtras()
+    precondition(screenshotMode(20, [.maskCommand, .maskShift], historyEnabled: true, autoCopy: true) == .full)
+    precondition(screenshotMode(21, [.maskCommand, .maskShift], historyEnabled: true, autoCopy: true) == .selection)
+    precondition(screenshotMode(21, [.maskCommand, .maskShift], historyEnabled: false, autoCopy: true) == nil)
+    precondition(screenshotMode(20, [.maskCommand, .maskShift, .maskControl], historyEnabled: true, autoCopy: true) == nil)
+    exit(0)
+}
+if CommandLine.arguments.contains("--test-caffeinate") { _ = NSApplication.shared; testCaffeinate(); exit(0) }
+if CommandLine.arguments.contains("--test-capture") { _ = NSApplication.shared; testCapture(); exit(0) }
 if CommandLine.arguments.contains("--test-styles") {
     _ = NSApplication.shared
     guard let sample = listWindows().first else { print("no windows to test"); exit(1) }
@@ -1655,6 +1672,25 @@ func openSetup() {
 
 // MARK: - Keyboard
 
+enum ScreenshotMode { case full, selection }
+func screenshotMode(_ code: Int64, _ flags: CGEventFlags,
+                    historyEnabled: Bool, autoCopy: Bool) -> ScreenshotMode? {
+    guard historyEnabled && autoCopy && flags == [.maskCommand, .maskShift] else { return nil }
+    return code == 20 ? .full : code == 21 ? .selection : nil
+}
+func captureScreenshot() {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+    process.arguments = ["-c"]
+    process.terminationHandler = { p in
+        if p.terminationStatus == 0 {
+            DispatchQueue.main.async { if defaults.bool(forKey: "clipboardEnabled") { clipboard.poll() } }
+        }
+    }
+    do { try process.run() }
+    catch { NSLog("NirTab screenshot: %@", String(describing: error)); NSSound.beep() }
+}
+
 let switcher = Switcher()
 var tap: CFMachPort?
 var tapSource: CFRunLoopSource?
@@ -1678,6 +1714,18 @@ let callback: CGEventTapCallBack = { _, type, event, _ in
     let modifiers = event.flags.intersection([.maskControl, .maskAlternate, .maskCommand, .maskShift])
     if recordingShortcut && settingsWindow?.isKeyWindow == true { return Unmanaged.passUnretained(event) }
     recordingShortcut = false
+    if !switcher.open && (type == .keyDown || type == .keyUp),
+       let mode = screenshotMode(code, modifiers, historyEnabled: defaults.bool(forKey: "clipboardEnabled"),
+                                 autoCopy: defaults.bool(forKey: "autoCopyScreenshots")) {
+        if mode == .selection {
+            event.flags.insert(.maskControl) // Let macOS handle its native selection/window UI.
+            return Unmanaged.passUnretained(event)
+        }
+        if type == .keyDown && event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
+            DispatchQueue.main.async { captureScreenshot() }
+        }
+        return nil
+    }
     if !switcher.open, let action = customAction(code, modifiers), type == .keyDown || type == .keyUp {
         if type == .keyDown { DispatchQueue.main.async { performWindowAction(action) } }
         return nil
@@ -1811,12 +1859,19 @@ final class MenuBar: NSObject, NSMenuDelegate {
                 .map { $0.trimmingCharacters(in: .whitespaces) }.contains(ignoredApp) ? .on : .off
         }
         menu.addItem(.separator())
+        add(menu, "Capture & Annotate…", #selector(capture))
+        add(menu, "Capture Area / Window / Record…", #selector(systemCapture))
         let experimental = NSMenu()
         let clips = add(experimental, "Clipboard history (⌥⌘V)", #selector(toggleClipboard))
         clips.state = defaults.bool(forKey: "clipboardEnabled") ? .on : .off
         if clips.state == .on { add(experimental, "Open Clipboard History…", #selector(showClipboard)) }
+        let screenshots = add(experimental, "Copy screenshots automatically (⌘⇧3 / ⌘⇧4)", #selector(toggleScreenshots))
+        screenshots.state = defaults.bool(forKey: "autoCopyScreenshots") ? .on : .off
+        screenshots.isEnabled = clips.state == .on
         let timer = add(experimental, "Pomodoro timer", #selector(togglePomodoro))
         timer.state = defaults.bool(forKey: "pomodoroEnabled") ? .on : .off
+        let awake = add(experimental, "Keep Mac awake (Caffeinate)", #selector(toggleCaffeinate))
+        awake.state = defaults.bool(forKey: "caffeinateEnabled") ? .on : .off
         let group = NSMenuItem(title: "Experimental Features", action: nil, keyEquivalent: "")
         group.submenu = experimental
         menu.addItem(group)
@@ -1835,6 +1890,13 @@ final class MenuBar: NSObject, NSMenuDelegate {
     }
 
     @objc func settings() { openSettings() }
+    @objc func capture() { openCapture() }
+    @objc func systemCapture() {
+        let app = URL(fileURLWithPath: "/System/Applications/Utilities/Screenshot.app")
+        NSWorkspace.shared.openApplication(at: app, configuration: .init()) { _, error in
+            if let error { DispatchQueue.main.async { showAlert("Couldn't open Screenshot", error.localizedDescription) } }
+        }
+    }
     @objc func runLayout(_ sender: NSMenuItem) {
         if let id = sender.representedObject as? String { rectanglePerform(id) }
     }
@@ -1848,7 +1910,13 @@ final class MenuBar: NSObject, NSMenuDelegate {
     @objc func setup() { openSetup() }
     @objc func showClipboard() { openClipboard() }
     @objc func toggleClipboard() { clipboard.setEnabled(!defaults.bool(forKey: "clipboardEnabled")) }
+    @objc func toggleScreenshots() { defaults.set(!defaults.bool(forKey: "autoCopyScreenshots"), forKey: "autoCopyScreenshots") }
     @objc func togglePomodoro() { pomodoro.setEnabled(!defaults.bool(forKey: "pomodoroEnabled")) }
+    @objc func toggleCaffeinate() {
+        let on = !defaults.bool(forKey: "caffeinateEnabled")
+        caffeinate.setEnabled(on)
+        defaults.set(on, forKey: "caffeinateEnabled")
+    }
     @objc func toggleLogin() {
         let s = SMAppService.mainApp
         do { try s.status == .enabled ? s.unregister() : s.register() } catch { NSSound.beep(); print("NirTab: login item: \(error)") }
@@ -1863,7 +1931,9 @@ final class MenuBar: NSObject, NSMenuDelegate {
 final class URLHandler: NSObject, NSApplicationDelegate {
     func application(_ application: NSApplication, open urls: [URL]) {
         for url in urls {
-            if let action = rectangleActionURL(url) { rectanglePerform(action) }
+            if url.scheme == "nirtab", url.host == "capture", url.path.isEmpty,
+               url.query == nil, url.fragment == nil { openCapture() }
+            else if let action = rectangleActionURL(url) { rectanglePerform(action) }
         }
     }
 }
@@ -1878,6 +1948,7 @@ for other in NSRunningApplication.runningApplications(withBundleIdentifier: Bund
 let menuBar = MenuBar()
 if defaults.bool(forKey: "clipboardEnabled") { clipboard.setEnabled(true) }
 if defaults.bool(forKey: "pomodoroEnabled") { pomodoro.setEnabled(true) }
+if defaults.bool(forKey: "caffeinateEnabled") { caffeinate.setEnabled(true) }
 menuBar.working = menuBar.ax && startTap()
 if !menuBar.ax {
     _ = AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary)
@@ -1948,6 +2019,9 @@ if CommandLine.arguments.contains("--test-rectangle-ui") {
     let items = layouts?.items.flatMap { $0.submenu?.items ?? [] } ?? []
     precondition(items.count == rectangleActions.count)
     precondition(Set(items.compactMap { $0.representedObject as? String }) == Set(rectangleActions.map(\.0)))
+    precondition(menu.item(withTitle: "Capture & Annotate…") != nil)
+    precondition(menu.item(withTitle: "Capture Area / Window / Record…") != nil)
+    precondition(menu.item(withTitle: "Experimental Features")?.submenu?.item(withTitle: "Keep Mac awake (Caffeinate)") != nil)
     openSettings()
     precondition(settingsWindow?.isVisible == true)
     print("rectangle UI PASS: \(items.count) actions, settings visible")

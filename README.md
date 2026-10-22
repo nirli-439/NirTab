@@ -50,13 +50,30 @@ Enable **Snap windows by dragging to screen edges** to get a footprint and snap 
 Other apps may constrain the resulting window size or position.
 Actions can also be triggered without activating NirTab via `open -g 'nirtab://execute-action?name=left-half'`.
 
-**Experimental features** (menu bar → Experimental Features, both off by default):
+**Experimental features** (menu bar → Experimental Features; clipboard history and Pomodoro are off by default):
 - **Clipboard history**: ⌥⌘V shows copied text, images/media and file references. Copy an entry back to the clipboard,
   pin it, or delete it. Up to 50 recent and 20 pinned items (16 MB per capture). Stored **unencrypted** in
   `~/Documents/NirTab/Clipboard/`; file entries reference the original file, rather than duplicating it.
   Disabling stops capture but keeps saved history until you delete it.
+- **Automatically copy screenshots**: With Clipboard history on, ⌘⇧3 (full screen) and ⌘⇧4 (selection/window)
+  copy the image to the clipboard and save it in history under `~/Documents/NirTab/Clipboard/`. Screenshots taken this
+  way are not also saved on the Desktop. Turn this off in Experimental Features or Settings to restore macOS's normal
+  file-saving shortcuts. ⌃⌘⇧3/4 still use macOS's built-in clipboard shortcut.
 - **Pomodoro**: a second menu-bar icon shows the countdown. Start/pause/reset focus sessions or start a break from its
   menu. A coffee popup appears when focus ends and the break timer starts. Configure focus/break minutes in Settings.
+- **Keep Mac awake**: turn on the separate cup from Experimental Features. Click the cup to start/stop preventing sleep;
+  right-click for independent display/idle/disk/system choices and an optional 15-minute–8-hour or custom auto-off timer.
+  The cup can return at login, but sleep prevention does not resume until you click it. Inspired by Caffeinate (MIT).
+
+**Capture Area / Window / Record…** opens macOS's built-in Screenshot toolbar; its recording files and save location
+follow macOS settings and do not enter NirTab's clipboard history automatically.
+
+**Capture & Annotate…** (menu bar, or `open -g 'nirtab://capture'`) captures the display under the pointer at full
+resolution. Draw arrows/rectangles, place text, undo/reset, then copy a PNG (also added to clipboard history if enabled)
+or save it; **Copy Text** uses macOS Vision OCR to copy recognized text. This is an independent implementation inspired
+by Capso's workflow; **not a copy of Capso's BSL source**.
+Capso's custom area/window/scroll capture tools, video/GIF editor, webcam, visual OCR selection, translation, cloud sharing, and full
+annotation editor are not included.
 
 **Tiles show:**
 - a window preview, plus the last picture taken of minimized windows
@@ -93,6 +110,8 @@ swift re/e2e.swift    # live check: minimize → listed with preview → restore
 /Applications/NirTab.app/Contents/MacOS/NirTab --test-recorder # shortcut recorder check
 /Applications/NirTab.app/Contents/MacOS/NirTab --test-background # image import/resize check
 /Applications/NirTab.app/Contents/MacOS/NirTab --test-extras # clipboard and timer checks
+/Applications/NirTab.app/Contents/MacOS/NirTab --test-caffeinate # in-memory sleep assertion/menu checks
+/Applications/NirTab.app/Contents/MacOS/NirTab --test-capture # image annotation and OCR checks
 /Applications/NirTab.app/Contents/MacOS/NirTab -layout list --test-styles # live layout and scroll check
 swift re/move-e2e.swift  # live check: all four halves and both display directions
 swift re/move-e2e.swift --rectangle --rectangle-url # live layout shortcuts and URL action
@@ -102,10 +121,10 @@ A local build has **Update (rebuild from source)** in its menu instead of Check 
 ## Releasing
 Push a tag, or run the **Release** workflow by hand with a version number:
 ```bash
-git tag v0.14 && git push origin v0.14
+git tag v0.15 && git push origin v0.15
 ```
 `.github/workflows/release.yml` then builds a universal app on a macOS runner, signs it, smoke-tests it and publishes
-`NirTab-0.14.zip` as a GitHub release. Installed copies pick it up via Check for Updates.
+`NirTab-0.15.zip` as a GitHub release. Installed copies pick it up via Check for Updates.
 
 ### Signing
 All releases must be signed with the same certificate, otherwise every user would have to grant permissions again
