@@ -1378,6 +1378,7 @@ if CommandLine.arguments.contains("--test-extras") {
     exit(0)
 }
 if CommandLine.arguments.contains("--test-caffeinate") { _ = NSApplication.shared; testCaffeinate(); exit(0) }
+if CommandLine.arguments.contains("--test-battery") { _ = NSApplication.shared; testBattery(); exit(0) }
 if CommandLine.arguments.contains("--test-capture") { _ = NSApplication.shared; testCapture(); exit(0) }
 if CommandLine.arguments.contains("--test-styles") {
     _ = NSApplication.shared
@@ -1483,6 +1484,7 @@ if let i = CommandLine.arguments.firstIndex(of: "--snapshot") {
     startedTap = true  // snapshot process doesn't own the tap; show the checklist as the running app sees it
     openSettings(); capture(settingsWindow, "settings")
     openSetup(); capture(setupWindow, "setup")
+    batteryMonitor.open(); capture(batteryMonitor.window, "battery")
     exit(0)
 }
 
@@ -1861,6 +1863,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
         menu.addItem(.separator())
         add(menu, "Capture & Annotate…", #selector(capture))
         add(menu, "Capture Area / Window / Record…", #selector(systemCapture))
+        add(menu, "Battery Health (coconutBattery-style)…", #selector(showBattery))
         let experimental = NSMenu()
         let clips = add(experimental, "Clipboard history (⌥⌘V)", #selector(toggleClipboard))
         clips.state = defaults.bool(forKey: "clipboardEnabled") ? .on : .off
@@ -1891,6 +1894,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
 
     @objc func settings() { openSettings() }
     @objc func capture() { openCapture() }
+    @objc func showBattery() { batteryMonitor.open() }
     @objc func systemCapture() {
         let app = URL(fileURLWithPath: "/System/Applications/Utilities/Screenshot.app")
         NSWorkspace.shared.openApplication(at: app, configuration: .init()) { _, error in
@@ -1933,6 +1937,8 @@ final class URLHandler: NSObject, NSApplicationDelegate {
         for url in urls {
             if url.scheme == "nirtab", url.host == "capture", url.path.isEmpty,
                url.query == nil, url.fragment == nil { openCapture() }
+            else if url.scheme == "nirtab", url.host == "battery", url.path.isEmpty,
+                    url.query == nil, url.fragment == nil { batteryMonitor.open() }
             else if let action = rectangleActionURL(url) { rectanglePerform(action) }
         }
     }
@@ -2020,6 +2026,7 @@ if CommandLine.arguments.contains("--test-rectangle-ui") {
     precondition(items.count == rectangleActions.count)
     precondition(Set(items.compactMap { $0.representedObject as? String }) == Set(rectangleActions.map(\.0)))
     precondition(menu.item(withTitle: "Capture & Annotate…") != nil)
+    precondition(menu.item(withTitle: "Battery Health (coconutBattery-style)…")?.action == #selector(MenuBar.showBattery))
     precondition(menu.item(withTitle: "Capture Area / Window / Record…") != nil)
     precondition(menu.item(withTitle: "Experimental Features")?.submenu?.item(withTitle: "Keep Mac awake (Caffeinate)") != nil)
     openSettings()

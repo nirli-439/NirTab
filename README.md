@@ -68,6 +68,13 @@ Actions can also be triggered without activating NirTab via `open -g 'nirtab://e
 **Capture Area / Window / Record…** opens macOS's built-in Screenshot toolbar; its recording files and save location
 follow macOS settings and do not enter NirTab's clipboard history automatically.
 
+**Battery Health (coconutBattery-style)…** opens a built-in popup with current charge, battery health (full charge
+capacity / design capacity), capacities in mAh, cycle count, temperature, voltage and adapter wattage. It refreshes
+every 10 seconds while open; **Refresh** updates immediately. Missing sensors show **Unavailable**, and desktops
+without a battery show an empty state. Also opens via `open -g 'nirtab://battery'`.
+This is an independent Mac battery monitor inspired by coconutBattery, not the proprietary app embedded or bundled.
+iPhone/iPad monitoring, battery history and coconutBattery's other features are not included.
+
 **Capture & Annotate…** (menu bar, or `open -g 'nirtab://capture'`) captures the display under the pointer at full
 resolution. Draw arrows/rectangles, place text, undo/reset, then copy a PNG (also added to clipboard history if enabled)
 or save it; **Copy Text** uses macOS Vision OCR to copy recognized text. This is an independent implementation inspired
@@ -111,6 +118,7 @@ swift re/e2e.swift    # live check: minimize → listed with preview → restore
 /Applications/NirTab.app/Contents/MacOS/NirTab --test-background # image import/resize check
 /Applications/NirTab.app/Contents/MacOS/NirTab --test-extras # clipboard and timer checks
 /Applications/NirTab.app/Contents/MacOS/NirTab --test-caffeinate # in-memory sleep assertion/menu checks
+/Applications/NirTab.app/Contents/MacOS/NirTab --test-battery # battery parsing, popup and refresh lifecycle
 /Applications/NirTab.app/Contents/MacOS/NirTab --test-capture # image annotation and OCR checks
 /Applications/NirTab.app/Contents/MacOS/NirTab -layout list --test-styles # live layout and scroll check
 swift re/move-e2e.swift  # live check: all four halves and both display directions
@@ -121,10 +129,10 @@ A local build has **Update (rebuild from source)** in its menu instead of Check 
 ## Releasing
 Push a tag, or run the **Release** workflow by hand with a version number:
 ```bash
-git tag v0.15 && git push origin v0.15
+git tag v0.16 && git push origin v0.16
 ```
 `.github/workflows/release.yml` then builds a universal app on a macOS runner, signs it, smoke-tests it and publishes
-`NirTab-0.15.zip` as a GitHub release. Installed copies pick it up via Check for Updates.
+`NirTab-0.16.zip` as a GitHub release. Installed copies pick it up via Check for Updates.
 
 ### Signing
 All releases must be signed with the same certificate, otherwise every user would have to grant permissions again

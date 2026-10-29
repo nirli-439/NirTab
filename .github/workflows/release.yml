@@ -55,6 +55,7 @@ jobs:
           NirTab.app/Contents/MacOS/NirTab --test-background
           NirTab.app/Contents/MacOS/NirTab --test-extras
           NirTab.app/Contents/MacOS/NirTab --test-caffeinate
+          NirTab.app/Contents/MacOS/NirTab --test-battery
           NirTab.app/Contents/MacOS/NirTab --test-capture
           lipo -archs NirTab.app/Contents/MacOS/NirTab
           /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" NirTab.app/Contents/Info.plist
