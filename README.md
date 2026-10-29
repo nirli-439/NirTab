@@ -55,6 +55,8 @@ Actions can also be triggered without activating NirTab via `open -g 'nirtab://e
   pin it, or delete it. Up to 50 recent and 20 pinned items (16 MB per capture). Stored **unencrypted** in
   `~/Documents/NirTab/Clipboard/`; file entries reference the original file, rather than duplicating it.
   Disabling stops capture but keeps saved history until you delete it.
+  Enable **Show clipboard menu-bar icon** in Experimental Features for a separate clipboard icon; click it to open
+  history. The preference survives restarts; disabling clipboard history hides the icon without clearing the preference.
 - **Automatically copy screenshots**: With Clipboard history on, ⌘⇧3 (full screen) and ⌘⇧4 (selection/window)
   copy the image to the clipboard and save it in history under `~/Documents/NirTab/Clipboard/`. Screenshots taken this
   way are not also saved on the Desktop. Turn this off in Experimental Features or Settings to restore macOS's normal
@@ -74,6 +76,9 @@ every 10 seconds while open; **Refresh** updates immediately. Missing sensors sh
 without a battery show an empty state. Also opens via `open -g 'nirtab://battery'`.
 This is an independent Mac battery monitor inspired by coconutBattery, not the proprietary app embedded or bundled.
 iPhone/iPad monitoring, battery history and coconutBattery's other features are not included.
+
+**Install DisplayLink Manager…** opens Synaptics' official macOS downloads page. Choose the installer there and follow
+its setup instructions; NirTab does not silently install drivers or change Screen Recording permissions.
 
 **Capture & Annotate…** (menu bar, or `open -g 'nirtab://capture'`) captures the display under the pointer at full
 resolution. Draw arrows/rectangles, place text, undo/reset, then copy a PNG (also added to clipboard history if enabled)
@@ -129,10 +134,10 @@ A local build has **Update (rebuild from source)** in its menu instead of Check 
 ## Releasing
 Push a tag, or run the **Release** workflow by hand with a version number:
 ```bash
-git tag v0.16 && git push origin v0.16
+git tag v0.17 && git push origin v0.17
 ```
 `.github/workflows/release.yml` then builds a universal app on a macOS runner, signs it, smoke-tests it and publishes
-`NirTab-0.16.zip` as a GitHub release. Installed copies pick it up via Check for Updates.
+`NirTab-0.17.zip` as a GitHub release. Installed copies pick it up via Check for Updates.
 
 ### Signing
 All releases must be signed with the same certificate, otherwise every user would have to grant permissions again

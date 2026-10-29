@@ -1864,10 +1864,14 @@ final class MenuBar: NSObject, NSMenuDelegate {
         add(menu, "Capture & Annotate…", #selector(capture))
         add(menu, "Capture Area / Window / Record…", #selector(systemCapture))
         add(menu, "Battery Health (coconutBattery-style)…", #selector(showBattery))
+        add(menu, "Install DisplayLink Manager…", #selector(installDisplayLink))
         let experimental = NSMenu()
         let clips = add(experimental, "Clipboard history (⌥⌘V)", #selector(toggleClipboard))
         clips.state = defaults.bool(forKey: "clipboardEnabled") ? .on : .off
         if clips.state == .on { add(experimental, "Open Clipboard History…", #selector(showClipboard)) }
+        let clipboardIcon = add(experimental, "Show clipboard menu-bar icon", #selector(toggleClipboardIcon))
+        clipboardIcon.state = defaults.bool(forKey: "clipboardIconEnabled") ? .on : .off
+        clipboardIcon.isEnabled = clips.state == .on
         let screenshots = add(experimental, "Copy screenshots automatically (⌘⇧3 / ⌘⇧4)", #selector(toggleScreenshots))
         screenshots.state = defaults.bool(forKey: "autoCopyScreenshots") ? .on : .off
         screenshots.isEnabled = clips.state == .on
@@ -1913,6 +1917,16 @@ final class MenuBar: NSObject, NSMenuDelegate {
     }
     @objc func setup() { openSetup() }
     @objc func showClipboard() { openClipboard() }
+    @objc func toggleClipboardIcon() {
+        let on = !defaults.bool(forKey: "clipboardIconEnabled")
+        defaults.set(on, forKey: "clipboardIconEnabled")
+        clipboardStatus.setVisible(on && defaults.bool(forKey: "clipboardEnabled"))
+    }
+    @objc func installDisplayLink() {
+        if !NSWorkspace.shared.open(URL(string: "https://www.synaptics.com/products/displaylink-graphics/downloads/macos")!) {
+            showAlert("Couldn't open DisplayLink downloads", "Visit synaptics.com to download DisplayLink Manager for macOS.")
+        }
+    }
     @objc func toggleClipboard() { clipboard.setEnabled(!defaults.bool(forKey: "clipboardEnabled")) }
     @objc func toggleScreenshots() { defaults.set(!defaults.bool(forKey: "autoCopyScreenshots"), forKey: "autoCopyScreenshots") }
     @objc func togglePomodoro() { pomodoro.setEnabled(!defaults.bool(forKey: "pomodoroEnabled")) }
@@ -2027,6 +2041,8 @@ if CommandLine.arguments.contains("--test-rectangle-ui") {
     precondition(Set(items.compactMap { $0.representedObject as? String }) == Set(rectangleActions.map(\.0)))
     precondition(menu.item(withTitle: "Capture & Annotate…") != nil)
     precondition(menu.item(withTitle: "Battery Health (coconutBattery-style)…")?.action == #selector(MenuBar.showBattery))
+    precondition(menu.item(withTitle: "Install DisplayLink Manager…")?.action == #selector(MenuBar.installDisplayLink))
+    precondition(menu.item(withTitle: "Experimental Features")?.submenu?.item(withTitle: "Show clipboard menu-bar icon") != nil)
     precondition(menu.item(withTitle: "Capture Area / Window / Record…") != nil)
     precondition(menu.item(withTitle: "Experimental Features")?.submenu?.item(withTitle: "Keep Mac awake (Caffeinate)") != nil)
     openSettings()

@@ -69,6 +69,7 @@ final class ClipboardHistory: ObservableObject {
             poll()
             timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.poll() }
         } else { clipboardWindow?.close() }
+        clipboardStatus.setVisible(on && defaults.bool(forKey: "clipboardIconEnabled"))
     }
     func poll() {
         guard pasteboard.changeCount != lastChange else { return }
@@ -139,6 +140,27 @@ final class ClipboardHistory: ObservableObject {
 
 let clipboard = ClipboardHistory()
 var clipboardWindow: NSWindow?
+
+final class ClipboardStatus: NSObject {
+    private(set) var item: NSStatusItem?
+    func setVisible(_ visible: Bool) {
+        if visible {
+            guard item == nil else { return }
+            item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+            let image = NSImage(systemSymbolName: "doc.on.clipboard", accessibilityDescription: "Clipboard history")
+            image?.isTemplate = true
+            item?.button?.image = image
+            item?.button?.toolTip = "Open Clipboard History (⌥⌘V)"
+            item?.button?.target = self
+            item?.button?.action = #selector(openHistory)
+        } else {
+            if let item { NSStatusBar.system.removeStatusItem(item) }
+            item = nil
+        }
+    }
+    @objc func openHistory() { openClipboard() }
+}
+let clipboardStatus = ClipboardStatus()
 
 struct ClipboardView: View {
     @ObservedObject var history: ClipboardHistory
@@ -293,6 +315,31 @@ final class Pomodoro: NSObject, NSMenuDelegate {
 let pomodoro = Pomodoro()
 
 func testExtras() {
+    let icon = ClipboardStatus()
+    icon.setVisible(true)
+    let first = icon.item
+    precondition(first?.button?.image != nil && first?.button?.target === icon)
+    icon.setVisible(true)
+    precondition(icon.item === first)
+    let oldEnabled = defaults.object(forKey: "clipboardEnabled")
+    let oldIcon = defaults.object(forKey: "clipboardIconEnabled")
+    defer {
+        clipboardWindow?.close()
+        clipboard.setEnabled(oldEnabled as? Bool ?? false)
+        defaults.set(oldEnabled, forKey: "clipboardEnabled")
+        defaults.set(oldIcon, forKey: "clipboardIconEnabled")
+        clipboardStatus.setVisible((oldEnabled as? Bool ?? false) && (oldIcon as? Bool ?? false))
+    }
+    defaults.set(true, forKey: "clipboardEnabled")
+    icon.item?.button?.performClick(nil)
+    precondition(clipboardWindow?.isVisible == true)
+    defaults.set(true, forKey: "clipboardIconEnabled")
+    clipboard.setEnabled(false)
+    precondition(clipboardStatus.item == nil && defaults.bool(forKey: "clipboardIconEnabled"))
+    clipboard.setEnabled(true)
+    precondition(clipboardStatus.item?.button?.image != nil)
+    icon.setVisible(false)
+    precondition(icon.item == nil)
     precondition(timerText(61) == "01:01" && timerText(0) == "00:00")
     let clock = Pomodoro()
     clock.phase = "focus"; clock.deadline = Date().addingTimeInterval(-1)
@@ -329,5 +376,5 @@ func testExtras() {
     precondition(large.count > store.maxBytes)
     pb.clearContents(); pb.setData(large, forType: .tiff); again.poll()
     precondition(again.clips.count == 4 && again.clips.contains { $0.items.first?[NSPasteboard.PasteboardType.png.rawValue] != nil })
-    print("extras PASS: text, image, file, pin, persistence, copy, timer")
+    print("extras PASS: clipboard icon click, hide/restore, text, image, file, pin, persistence, copy, timer")
 }
