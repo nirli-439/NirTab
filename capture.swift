@@ -2,7 +2,7 @@ import AppKit
 import ScreenCaptureKit
 import Vision
 
-private enum CaptureTool { case arrow, rectangle, text }
+private enum CaptureTool: Int { case arrow, rectangle, circle, text, crop }
 private struct CaptureMark {
     let tool: CaptureTool
     let start: CGPoint
@@ -16,9 +16,23 @@ private final class CaptureCanvas: NSView {
     var tool: CaptureTool = .arrow
     var text = ""
     var marks: [CaptureMark] = [] { didSet { needsDisplay = true } }
+    // Crop is non-destructive: marks stay in full-image pixels; only export and OCR use the cropped area.
+    var crop: CGRect? { didSet { needsDisplay = true } }
+    var cropAfterMarks = 0  // marks.count when the crop was set, so Undo removes the newest change first
+    var exportRect: CGRect {
+        let full = CGRect(x: 0, y: 0, width: image.width, height: image.height)
+        return (crop ?? full).integral.intersection(full)
+    }
+    // exportRect as a CGImage rect (top-left origin), for cropping the raw capture.
+    var exportImage: CGImage {
+        let r = exportRect
+        return image.cropping(to: CGRect(x: r.minX, y: CGFloat(image.height) - r.maxY, width: r.width, height: r.height)) ?? image
+    }
     private var dragStart: CGPoint?
     private var provisional: CaptureMark?
     override var isFlipped: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .crosshair) }
 
     init(image: CGImage, size: CGSize) {
         self.image = image
@@ -44,7 +58,10 @@ private final class CaptureCanvas: NSView {
     override func mouseUp(with event: NSEvent) {
         guard let start = dragStart else { return }
         let end = pixelPoint(convert(event.locationInWindow, from: nil))
-        if hypot(end.x - start.x, end.y - start.y) > 2 {
+        if tool == .crop {
+            let r = CGRect(x: min(start.x, end.x), y: min(start.y, end.y), width: abs(end.x - start.x), height: abs(end.y - start.y))
+            if r.width >= 8 && r.height >= 8 { crop = r; cropAfterMarks = marks.count }
+        } else if hypot(end.x - start.x, end.y - start.y) > 2 {
             marks.append(CaptureMark(tool: tool, start: start, end: end, text: ""))
         }
         dragStart = nil; provisional = nil; needsDisplay = true
@@ -52,21 +69,42 @@ private final class CaptureCanvas: NSView {
     override func draw(_ dirtyRect: NSRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
         render(in: context, size: bounds.size)
+        // Crop overlay (screen only): dim outside the crop, dashed border around it.
+        let sx = bounds.width / CGFloat(image.width), sy = bounds.height / CGFloat(image.height)
+        let pending = provisional.flatMap { $0.tool == .crop ? $0 : nil }.map {
+            CGRect(x: min($0.start.x, $0.end.x), y: min($0.start.y, $0.end.y), width: abs($0.end.x - $0.start.x), height: abs($0.end.y - $0.start.y))
+        }
+        guard let area = pending ?? crop else { return }
+        let r = CGRect(x: area.minX * sx, y: area.minY * sy, width: area.width * sx, height: area.height * sy)
+        context.saveGState()
+        context.addRect(bounds); context.addRect(r)
+        context.setFillColor(NSColor.black.withAlphaComponent(0.5).cgColor)
+        context.fillPath(using: .evenOdd)
+        context.setStrokeColor(NSColor.white.cgColor)
+        context.setLineWidth(1.5)
+        context.setLineDash(phase: 0, lengths: [6, 4])
+        context.stroke(r)
+        context.restoreGState()
     }
     private func render(in context: CGContext, size: CGSize) {
         context.saveGState()
         context.interpolationQuality = .high
         context.draw(image, in: CGRect(origin: .zero, size: size))
         context.scaleBy(x: size.width / CGFloat(image.width), y: size.height / CGFloat(image.height))
-        for mark in marks + (provisional.map { [$0] } ?? []) {
+        for mark in marks + (provisional.map { [$0] } ?? []) where mark.tool != .crop {
             context.saveGState()
             context.setStrokeColor(NSColor.systemRed.cgColor)
             context.setLineWidth(4)
             context.setLineCap(.round)
+            let box = CGRect(x: min(mark.start.x, mark.end.x), y: min(mark.start.y, mark.end.y),
+                             width: abs(mark.end.x - mark.start.x), height: abs(mark.end.y - mark.start.y))
             switch mark.tool {
+            case .crop:
+                break
             case .rectangle:
-                context.stroke(CGRect(x: min(mark.start.x, mark.end.x), y: min(mark.start.y, mark.end.y),
-                                    width: abs(mark.end.x - mark.start.x), height: abs(mark.end.y - mark.start.y)))
+                context.stroke(box)
+            case .circle:
+                context.strokeEllipse(in: box)
             case .arrow:
                 let angle = atan2(mark.end.y - mark.start.y, mark.end.x - mark.start.x)
                 context.move(to: mark.start); context.addLine(to: mark.end)
@@ -87,12 +125,14 @@ private final class CaptureCanvas: NSView {
         context.restoreGState()
     }
     func png() -> Data? {
-        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: image.width, pixelsHigh: image.height,
+        let area = exportRect
+        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(area.width), pixelsHigh: Int(area.height),
                                          bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
                                          colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
               let graphics = NSGraphicsContext(bitmapImageRep: rep) else { return nil }
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = graphics
+        graphics.cgContext.translateBy(x: -area.minX, y: -area.minY)
         render(in: graphics.cgContext, size: CGSize(width: image.width, height: image.height))
         graphics.flushGraphics()
         NSGraphicsContext.restoreGraphicsState()
@@ -100,53 +140,120 @@ private final class CaptureCanvas: NSView {
     }
 }
 
+// Keeps the image centered in the scroll area, with a margin, at any window size.
+private final class CenteringView: NSView {
+    override var isFlipped: Bool { true }
+    override func layout() {
+        super.layout()
+        guard let child = subviews.first else { return }
+        let visible = enclosingScrollView?.contentSize ?? bounds.size
+        let size = CGSize(width: max(visible.width, child.frame.width + 48), height: max(visible.height, child.frame.height + 48))
+        if frame.size != size { setFrameSize(size) }
+        child.setFrameOrigin(CGPoint(x: ((size.width - child.frame.width) / 2).rounded(), y: ((size.height - child.frame.height) / 2).rounded()))
+    }
+}
+
 private final class CaptureEditor: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     let window: NSWindow
     let canvas: CaptureCanvas
+    private let tools: NSSegmentedControl
     private let input = NSTextField(string: "")
     init(image: CGImage) {
         let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main
         let available = screen?.visibleFrame.size ?? CGSize(width: 1000, height: 700)
-        let width = min(1100, available.width * 0.85), height = min(780, available.height * 0.85)
-        let scale = min((width - 30) / CGFloat(image.width), (height - 100) / CGFloat(image.height), 1)
+        let width = min(1240, max(1000, available.width * 0.85)), height = min(840, available.height * 0.88)
+        let scale = min((width - 60) / CGFloat(image.width), (height - 150) / CGFloat(image.height), 1)
         canvas = CaptureCanvas(image: image, size: CGSize(width: CGFloat(image.width) * scale,
                                                           height: CGFloat(image.height) * scale))
+        // Large icon + label segments for the tools.
+        let toolInfo = [("Arrow", "arrow.up.right"), ("Box", "rectangle"), ("Circle", "circle"), ("Text", "textformat"), ("Crop", "crop")]
+        tools = NSSegmentedControl(labels: toolInfo.map(\.0), trackingMode: .selectOne, target: nil, action: nil)
+        tools.controlSize = .large
+        tools.segmentStyle = .capsule
+        for (i, (name, symbol)) in toolInfo.enumerated() {
+            tools.setImage(NSImage(systemSymbolName: symbol, accessibilityDescription: name)?
+                .withSymbolConfiguration(.init(pointSize: 15, weight: .semibold)), forSegment: i)
+            tools.setImageScaling(.scaleProportionallyDown, forSegment: i)
+            tools.setWidth(84, forSegment: i)
+        }
         window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: width, height: height),
                           styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
         super.init()
         window.title = "Capture"
         window.isReleasedWhenClosed = false  // The editor owns the window until windowWillClose clears it.
         window.delegate = self
-        window.minSize = CGSize(width: 540, height: 380)
+        window.minSize = CGSize(width: 980, height: 480)
+        window.titlebarAppearsTransparent = true
+        window.appearance = NSAppearance(named: .darkAqua)
+        window.backgroundColor = NSColor(calibratedWhite: 0.11, alpha: 1)
         let stack = NSStackView()
         stack.orientation = .vertical; stack.spacing = 0
         let bar = NSStackView()
         bar.orientation = .horizontal; bar.spacing = 8
-        bar.edgeInsets = NSEdgeInsets(top: 8, left: 10, bottom: 8, right: 10)
-        @discardableResult func button(_ title: String, _ action: Selector) -> NSButton {
-            let b = NSButton(title: title, target: self, action: action)
+        bar.spacing = 10
+        bar.edgeInsets = NSEdgeInsets(top: 12, left: 16, bottom: 12, right: 16)
+        tools.target = self; tools.action = #selector(selectTool); tools.selectedSegment = 0
+        bar.addArrangedSubview(tools)
+        @discardableResult func button(_ title: String, _ symbol: String, _ action: Selector, key: String = "",
+                                       mods: NSEvent.ModifierFlags = [], accent: NSColor? = nil, iconOnly: Bool = false) -> NSButton {
+            let b = NSButton(title: iconOnly ? "" : title, target: self, action: action)
+            b.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)?
+                .withSymbolConfiguration(.init(pointSize: 14, weight: .semibold))
+            b.imagePosition = iconOnly ? .imageOnly : .imageLeading
+            b.imageHugsTitle = true
+            b.controlSize = .large
+            b.bezelStyle = .push
+            b.font = .systemFont(ofSize: 13, weight: .semibold)
+            b.toolTip = key.isEmpty ? title : "\(title) (\(mods.contains(.command) ? "⌘" : "")\(key == "\u{1b}" ? "esc" : key.uppercased()))"
+            if let accent { b.bezelColor = accent; b.contentTintColor = .white }
+            b.keyEquivalent = key; b.keyEquivalentModifierMask = mods
             bar.addArrangedSubview(b)
             return b
         }
-        button("Arrow", #selector(arrow))
-        button("Rectangle", #selector(rectangle))
-        button("Text", #selector(textTool))
-        input.placeholderString = "Text to place (then click image)"
+        func gap(_ w: CGFloat) { let v = NSView(); v.widthAnchor.constraint(equalToConstant: w).isActive = true; bar.addArrangedSubview(v) }
+        input.placeholderString = "Type text, then click the image"
         input.delegate = self
-        input.widthAnchor.constraint(equalToConstant: 205).isActive = true
+        input.controlSize = .large
+        input.font = .systemFont(ofSize: 14)
+        input.bezelStyle = .roundedBezel
+        input.widthAnchor.constraint(equalToConstant: 200).isActive = true
+        gap(4)
         bar.addArrangedSubview(input)
-        button("Undo", #selector(undo))
-        button("Reset", #selector(reset))
-        button("Copy", #selector(copyPNG))
-        button("Copy Text", #selector(copyText))
-        button("Save…", #selector(savePNG))
-        let cancel = button("Cancel", #selector(cancel))
-        cancel.keyEquivalent = "\u{1b}"
+        button("Undo", "arrow.uturn.backward", #selector(undo), key: "z", mods: .command, iconOnly: true)
+        button("Reset", "trash", #selector(reset), iconOnly: true)
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        bar.addArrangedSubview(spacer)
+        button("Cancel", "xmark", #selector(cancel), key: "\u{1b}", iconOnly: true)
+        button("Copy Text", "text.viewfinder", #selector(copyText))
+        button("Save…", "square.and.arrow.down", #selector(savePNG), key: "s", mods: .command)
+        button("Copy", "doc.on.doc.fill", #selector(copyPNG), key: "c", mods: .command, accent: .controlAccentColor)
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true; scroll.hasHorizontalScroller = true
-        scroll.documentView = canvas
-        stack.addArrangedSubview(bar); stack.addArrangedSubview(scroll)
+        scroll.drawsBackground = false
+        scroll.autohidesScrollers = true
+        canvas.wantsLayer = true
+        canvas.layer?.cornerRadius = 8
+        canvas.layer?.masksToBounds = true
+        canvas.shadow = NSShadow()
+        // Center the image with a margin on a dark backdrop.
+        let holder = CenteringView()
+        holder.addSubview(canvas)
+        holder.frame.size = CGSize(width: canvas.frame.width + 48, height: canvas.frame.height + 48)
+        scroll.documentView = holder
+        let frost = NSVisualEffectView()
+        frost.material = .titlebar; frost.blendingMode = .withinWindow; frost.state = .active
+        frost.addSubview(bar)
+        bar.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            bar.leadingAnchor.constraint(equalTo: frost.leadingAnchor), bar.trailingAnchor.constraint(equalTo: frost.trailingAnchor),
+            bar.topAnchor.constraint(equalTo: frost.topAnchor, constant: 22), bar.bottomAnchor.constraint(equalTo: frost.bottomAnchor)
+        ])
+        stack.addArrangedSubview(frost); stack.addArrangedSubview(scroll)
+        stack.setHuggingPriority(.required, for: .vertical)
+        frost.setContentHuggingPriority(.required, for: .vertical)
         bar.setContentHuggingPriority(.required, for: .vertical)
+        frost.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         stack.translatesAutoresizingMaskIntoConstraints = false
         window.contentView?.addSubview(stack)
         if let content = window.contentView {
@@ -161,12 +268,19 @@ private final class CaptureEditor: NSObject, NSWindowDelegate, NSTextFieldDelega
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
-    func controlTextDidChange(_ obj: Notification) { canvas.text = input.stringValue }
-    @objc private func arrow() { canvas.tool = .arrow }
-    @objc private func rectangle() { canvas.tool = .rectangle }
-    @objc private func textTool() { canvas.tool = .text; canvas.text = input.stringValue; window.makeFirstResponder(input) }
-    @objc private func undo() { if !canvas.marks.isEmpty { canvas.marks.removeLast() } }
-    @objc private func reset() { canvas.marks.removeAll() }
+    func controlTextDidChange(_ obj: Notification) {
+        canvas.text = input.stringValue
+        if !input.stringValue.isEmpty { tools.selectedSegment = CaptureTool.text.rawValue; canvas.tool = .text }
+    }
+    @objc private func selectTool() {
+        canvas.tool = CaptureTool(rawValue: tools.selectedSegment) ?? .arrow
+        if canvas.tool == .text { canvas.text = input.stringValue; window.makeFirstResponder(input) }
+    }
+    @objc private func undo() {
+        if canvas.crop != nil && canvas.marks.count <= canvas.cropAfterMarks { canvas.crop = nil }
+        else if !canvas.marks.isEmpty { canvas.marks.removeLast() }
+    }
+    @objc private func reset() { canvas.marks.removeAll(); canvas.crop = nil }
     @objc private func cancel() { window.close() }
     @objc private func copyPNG() {
         guard let data = canvas.png() else { captureError("Could not encode the PNG.", window: window); return }
@@ -177,7 +291,7 @@ private final class CaptureEditor: NSObject, NSWindowDelegate, NSTextFieldDelega
         window.close()
     }
     @objc private func copyText() {
-        let image = canvas.image
+        let image = canvas.exportImage
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let request = VNRecognizeTextRequest()
             request.recognitionLevel = .accurate
@@ -260,6 +374,7 @@ func testCapture() {
     NSGraphicsContext.restoreGraphicsState()
     let canvas = CaptureCanvas(image: rep.cgImage!, size: CGSize(width: 80, height: 45))
     canvas.marks = [CaptureMark(tool: .rectangle, start: CGPoint(x: 10, y: 10), end: CGPoint(x: 90, y: 60), text: ""),
+                    CaptureMark(tool: .circle, start: CGPoint(x: 95, y: 10), end: CGPoint(x: 150, y: 65), text: ""),
                     CaptureMark(tool: .arrow, start: CGPoint(x: 15, y: 20), end: CGPoint(x: 100, y: 70), text: ""),
                     CaptureMark(tool: .text, start: CGPoint(x: 30, y: 30), end: CGPoint(x: 30, y: 30), text: "Test")]
     guard let png = canvas.png(), png.starts(with: [137, 80, 78, 71, 13, 10, 26, 10]),
@@ -271,8 +386,8 @@ func testCapture() {
             return c.redComponent > c.greenComponent + 0.2
         }.count
     }
-    precondition(colored > 50, "Annotations not rendered (\(colored) colored pixels)")
-    canvas.marks.removeFirst(2)
+    precondition(colored > 80, "Annotations not rendered (\(colored) colored pixels)")
+    canvas.marks.removeFirst(3)
     guard let textPNG = canvas.png(), let textImage = NSBitmapImageRep(data: textPNG) else {
         preconditionFailure("Text PNG export failed")
     }
@@ -285,6 +400,15 @@ func testCapture() {
     precondition(textPixels > 10, "Text annotation not rendered")
     canvas.marks.removeAll()
     precondition(canvas.marks.isEmpty, "Reset failed")
+    // Crop: export is only the cropped area, OCR image matches, and marks keep full-image coordinates.
+    canvas.marks = [CaptureMark(tool: .rectangle, start: CGPoint(x: 0, y: 0), end: CGPoint(x: 160, y: 90), text: "")]
+    canvas.crop = CGRect(x: 20, y: 10, width: 60.4, height: 30.2)
+    guard let croppedPNG = canvas.png(), let cropped = NSBitmapImageRep(data: croppedPNG) else { preconditionFailure("Crop export failed") }
+    precondition(cropped.pixelsWide == 61 && cropped.pixelsHigh == 31, "Crop size \(cropped.pixelsWide)x\(cropped.pixelsHigh)")
+    precondition(canvas.exportImage.width == 61 && canvas.exportImage.height == 31, "Crop OCR image size")
+    canvas.crop = nil; canvas.marks.removeAll()
+    let editor = CaptureEditor(image: rep.cgImage!)
+    editor.window.close()
     let ocrRep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 640, pixelsHigh: 160,
                                   bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
                                   colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
@@ -299,5 +423,5 @@ func testCapture() {
     request.recognitionLevel = .accurate
     try! VNImageRequestHandler(cgImage: ocrRep.cgImage!).perform([request])
     precondition((request.results ?? []).contains { $0.topCandidates(1).first?.string.contains("NIRTAB") == true }, "OCR failed")
-    print("Capture self-check passed: rectangle, arrow, text, reset, OCR; 160×90 PNG")
+    print("Capture self-check passed: rectangle, circle, arrow, text, reset, crop, OCR; 160×90 PNG")
 }

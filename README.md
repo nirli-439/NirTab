@@ -32,9 +32,13 @@ Requires macOS 14 or later, Apple Silicon or Intel. Quit other ⌘Tab tools such
 **Mouse:** hover a tile to select it and show its buttons (close, minimize/restore, maximize, quit; larger red force quit above).
 Click a tile to switch to it.
 
+**In the switcher**, ←/→ move one tile and ↑/↓ move one row (wrapping within the column).
+
 **Move the front window:** ⌥⌘ + ←/→/↑/↓ snaps it to the left/right/top/bottom half of its display.
 ⌃⌥⌘ + an arrow sends it to the nearest display in that direction, keeping its size and relative position where possible.
-An arrow with no display in that direction does nothing. Some macOS apps do not allow their windows to be moved or resized.
+An arrow with no display in that direction does nothing.
+⌃⌥⌘S swaps the front window with the top window on the other display: each takes the other's place and size
+(with 3+ displays, the display to the right, wrapping). The front window stays focused. Some macOS apps do not allow their windows to be moved or resized.
 
 **Five custom shortcuts:** Settings → Custom shortcuts. For each slot, choose a window action, click **Record…**,
 then press ⌘, ⌥ or ⌃ (optionally ⇧) plus a key. Changes work immediately. **Clear** disables a slot.
@@ -51,6 +55,9 @@ Other apps may constrain the resulting window size or position.
 Actions can also be triggered without activating NirTab via `open -g 'nirtab://execute-action?name=left-half'`.
 
 **Experimental features** (menu bar → Experimental Features; clipboard history and Pomodoro are off by default):
+- **AI app icons** (on by default): Claude, ChatGPT, Gemini and ArtCraft icons in the menu bar. A click opens the app;
+  if it isn't installed, NirTab offers to download it from the official source, checks it with Gatekeeper
+  (signed + notarized), installs it in /Applications and opens it. Gemini has no Mac download, so it opens gemini.google.com.
 - **Clipboard history**: ⌥⌘V shows copied text, images/media and file references. Copy an entry back to the clipboard,
   pin it, or delete it. Up to 50 recent and 20 pinned items (16 MB per capture). Stored **unencrypted** in
   `~/Documents/NirTab/Clipboard/`; file entries reference the original file, rather than duplicating it.
@@ -67,8 +74,9 @@ Actions can also be triggered without activating NirTab via `open -g 'nirtab://e
   right-click for independent display/idle/disk/system choices and an optional 15-minute–8-hour or custom auto-off timer.
   The cup can return at login, but sleep prevention does not resume until you click it. Inspired by Caffeinate (MIT).
 
-**Capture Area / Window / Record…** opens macOS's built-in Screenshot toolbar; its recording files and save location
-follow macOS settings and do not enter NirTab's clipboard history automatically.
+**Coffee Break** (main menu): start a standalone 5-, 10- or 15-minute break without enabling Pomodoro.
+A separate cup shows the countdown; click it to pause/resume, restart or cancel. A popup and sound mark the end.
+No focus session starts afterward, and quitting/restarting NirTab clears the break. This does not keep the Mac awake.
 
 **Battery Health (coconutBattery-style)…** opens a built-in popup with current charge, battery health (full charge
 capacity / design capacity), capacities in mAh, cycle count, temperature, voltage and adapter wattage. It refreshes
@@ -81,7 +89,7 @@ iPhone/iPad monitoring, battery history and coconutBattery's other features are 
 its setup instructions; NirTab does not silently install drivers or change Screen Recording permissions.
 
 **Capture & Annotate…** (menu bar, or `open -g 'nirtab://capture'`) captures the display under the pointer at full
-resolution. Draw arrows/rectangles, place text, undo/reset, then copy a PNG (also added to clipboard history if enabled)
+resolution. Draw arrows/rectangles/circles, place text, undo/reset, then copy a PNG (also added to clipboard history if enabled)
 or save it; **Copy Text** uses macOS Vision OCR to copy recognized text. This is an independent implementation inspired
 by Capso's workflow; **not a copy of Capso's BSL source**.
 Capso's custom area/window/scroll capture tools, video/GIF editor, webcam, visual OCR selection, translation, cloud sharing, and full
@@ -123,6 +131,7 @@ swift re/e2e.swift    # live check: minimize → listed with preview → restore
 /Applications/NirTab.app/Contents/MacOS/NirTab --test-background # image import/resize check
 /Applications/NirTab.app/Contents/MacOS/NirTab --test-extras # clipboard and timer checks
 /Applications/NirTab.app/Contents/MacOS/NirTab --test-caffeinate # in-memory sleep assertion/menu checks
+/Applications/NirTab.app/Contents/MacOS/NirTab --test-coffee-break # one-shot break timer and completion popup
 /Applications/NirTab.app/Contents/MacOS/NirTab --test-battery # battery parsing, popup and refresh lifecycle
 /Applications/NirTab.app/Contents/MacOS/NirTab --test-capture # image annotation and OCR checks
 /Applications/NirTab.app/Contents/MacOS/NirTab -layout list --test-styles # live layout and scroll check

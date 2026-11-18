@@ -11,6 +11,7 @@ let rectangleActions: [(String, String)] = [
     ("maximize", "Maximize"), ("almost-maximize", "Almost Maximize"), ("maximize-height", "Maximize Height"),
     ("smaller", "Smaller"), ("larger", "Larger"), ("center", "Center"), ("center-prominently", "Center Prominently"),
     ("restore", "Restore"), ("next-display", "Next Display"), ("previous-display", "Previous Display"),
+    ("swap-displays", "Swap Window With Other Display"),
     ("move-left", "Move Left"), ("move-right", "Move Right"), ("move-up", "Move Up"), ("move-down", "Move Down"),
     ("first-fourth", "First Fourth"), ("second-fourth", "Second Fourth"), ("third-fourth", "Third Fourth"),
     ("last-fourth", "Last Fourth"), ("first-three-fourths", "First Three Fourths"),
@@ -61,7 +62,7 @@ let rectangleRecommended: [String: (CGEventFlags, Int64)] = {
             "next-display": (cac, 124), "larger": (ca, 24), "smaller": (ca, 27), "center": (ca, 8),
             "restore": (ca, 51), "first-third": (ca, 2), "first-two-thirds": (ca, 14),
             "center-third": (ca, 3), "last-two-thirds": (ca, 17), "last-third": (ca, 5),
-            "center-two-thirds": (ca, 15)]
+            "center-two-thirds": (ca, 15), "swap-displays": (cac, 1)]
 }()
 let rectangleSpectacle: [String: (CGEventFlags, Int64)] = {
     let co: CGEventFlags = [.maskCommand, .maskAlternate]
@@ -73,13 +74,14 @@ let rectangleSpectacle: [String: (CGEventFlags, Int64)] = {
             "maximize": (co, 3), "maximize-height": (cas, 126), "previous-display": (cac, 123),
             "next-display": (cac, 124), "larger": (cas, 124), "smaller": (cas, 123), "center": (co, 8),
             "top-left": (cc, 123), "top-right": (cc, 124), "bottom-left": (ccs, 123),
-            "bottom-right": (ccs, 124), "restore": ([.maskControl, .maskAlternate], 51)]
+            "bottom-right": (ccs, 124), "restore": ([.maskControl, .maskAlternate], 51),
+            "swap-displays": (cac, 1)]
 }()
 func rectangleDefaultShortcut(_ action: String, in store: UserDefaults = defaults) -> String {
     guard let (flags, key) = (store.bool(forKey: "rectangleSpectacle") ? rectangleSpectacle : rectangleRecommended)[action]
     else { return "" }
     let label: String = [123: "←", 124: "→", 125: "↓", 126: "↑", 36: "↩", 51: "⌫"][key]
-        ?? [32: "U", 34: "I", 38: "J", 40: "K", 24: "=", 27: "-", 3: "F", 8: "C", 2: "D", 14: "E", 17: "T", 5: "G", 15: "R"][key] ?? "?"
+        ?? [1: "S", 32: "U", 34: "I", 38: "J", 40: "K", 24: "=", 27: "-", 3: "F", 8: "C", 2: "D", 14: "E", 17: "T", 5: "G", 15: "R"][key] ?? "?"
     return "\(flags.rawValue):\(key):\(label)"
 }
 func rectangleActionURL(_ url: URL) -> String? {
@@ -306,7 +308,31 @@ func rectangleScreenIndex(for current: CGRect, snapScreen: CGRect?, in screens: 
     screenIndex(for: snapScreen ?? current, in: screens)
 }
 
+// Swaps the front window with the top window on the next display (left to right, wrapping):
+// each takes the other's exact frame.
+func rectangleSwapDisplays() {
+    let screens = NSScreen.screens
+    guard screens.count > 1, let main = screens.first else { NSSound.beep(); return }
+    let mainTop = main.frame.height
+    let sorted = screens.indices.sorted { screens[$0].frame.minX < screens[$1].frame.minX }
+    let frames = screens.map(\.frame)
+    let windows: [(Win, CGRect, Int)] = listWindows(includeExcluded: true).compactMap { w in
+        guard let el = w.ax, !w.minimized, !w.app.isHidden,
+              (attr(el, kAXSubroleAttribute) as String?) == kAXStandardWindowSubrole, let raw = frame(el) else { return nil }
+        return (w, raw, screenIndex(for: flipY(raw, mainTop: mainTop), in: frames))
+    }
+    guard let front = windows.first, let i = sorted.firstIndex(of: front.2),
+          let other = windows.first(where: { $0.2 == sorted[(i + 1) % sorted.count] }) else { NSSound.beep(); return }
+    for (w, raw, _) in [front, other] where w.wid != 0 && rectangleOriginalFrames[w.wid] == nil {
+        rectangleOriginalFrames[w.wid] = raw
+    }
+    setFrame(front.0.ax!, other.1)
+    setFrame(other.0.ax!, front.1)
+    focus(front.0)
+}
+
 func rectanglePerform(_ action: String, snapScreen: CGRect? = nil) {
+    if action == "swap-displays" { rectangleSwapDisplays(); return }
     guard let active = NSWorkspace.shared.frontmostApplication,
           active.processIdentifier != getpid(), let main = NSScreen.screens.first else { NSSound.beep(); return }
     let screens = NSScreen.screens
@@ -450,9 +476,11 @@ func testRectangleGeometry() {
                  "keyboard snap must use window display")
     precondition(rectangleActionURL(URL(string: "nirtab://execute-action?name=left-half")!) == "left-half")
     precondition(rectangleActionURL(URL(string: "nirtab://execute-action?name=not-an-action")!) == nil)
-    for (action, _) in rectangleActions where !["tile-all", "tile-active-app", "tile-rows", "tile-columns", "cascade-all", "cascade-active-app", "reverse-all", "cycle-stacked-windows", "cycle-stacked-windows-backward", "specified", "restore", "next-display", "previous-display"].contains(action) && !action.hasPrefix("display-") {
+    for (action, _) in rectangleActions where !["tile-all", "tile-active-app", "tile-rows", "tile-columns", "cascade-all", "cascade-active-app", "reverse-all", "cycle-stacked-windows", "cycle-stacked-windows-backward", "specified", "restore", "next-display", "previous-display", "swap-displays"].contains(action) && !action.hasPrefix("display-") {
         let target = rectangleTarget(action, screen: f, current: r)
         precondition(target != nil && target!.width > 0 && target!.height > 0, "missing geometry for \(action)")
     }
+    precondition(rectangleShortcut(1, [.maskControl, .maskAlternate, .maskCommand],
+                                   in: UserDefaults(suiteName: "nirtab-swap-test-\(UUID())")!) == "swap-displays")
     print("rectangle geometry PASS")
 }

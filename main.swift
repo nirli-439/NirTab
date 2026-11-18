@@ -20,7 +20,7 @@ import UniformTypeIdentifiers
 
 let defaults = UserDefaults.standard
 defaults.register(defaults: ["hold": "cmd", "minimized": "end", "showHidden": true, "showWindowless": true,
-                             "previews": true, "size": 260.0, "screen": "mouse", "excluded": "", "memory": true,
+                             "previews": true, "aiIconsEnabled": true, "size": 260.0, "screen": "mouse", "excluded": "", "memory": true,
                              "layout": "default", "columns": 4, "focusMinutes": 25, "breakMinutes": 5,
                              "rectangleGap": 0.0, "rectangleMaxPerRow": 3, "rectangleMaxPerColumn": 3,
                              "rectangleWidth": 1100, "rectangleHeight": 700, "rectangleIgnored": "",
@@ -309,8 +309,8 @@ func formatBytes(_ b: UInt64) -> String {
 
 // MARK: - Thumbnails
 // macOS can't screenshot a minimized window (SCK error -3811), so we keep each window's last picture, taken while it
-// was visible: on every app switch, every 20 s for the window in front, right before NirTab minimizes it, and when the
-// switcher opens. Pictures are also saved to disk, so they survive NirTab updates and restarts.
+// was visible: on every app switch, when a window is focused or opened inside the front app, on ⌘M or a click on the yellow
+// button, every 20 s for every on-screen window, right before NirTab minimizes it, and when the switcher opens. Pictures are also saved to disk, so they survive NirTab updates and restarts.
 var thumbs: [CGWindowID: CGImage] = [:]
 // Window ids restart at boot, so pictures are kept per boot; older boots are deleted at launch.
 let thumbDir: URL = {
@@ -339,6 +339,77 @@ func storeThumb(_ wid: CGWindowID, _ img: CGImage) {
         CGImageDestinationAddImage(dst, img, [kCGImageDestinationLossyCompressionQuality: 0.8] as CFDictionary)
         CGImageDestinationFinalize(dst)
     }
+}
+
+// The front app's on-screen windows, and its focused window.
+func frontWindowWids() -> Set<CGWindowID> {
+    guard let front = NSWorkspace.shared.frontmostApplication?.processIdentifier, front != getpid() else { return [] }
+    let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+    return Set(info.compactMap { w in
+        (w[kCGWindowOwnerPID as String] as? pid_t) == front && (w[kCGWindowLayer as String] as? Int) == 0
+            ? w[kCGWindowNumber as String] as? CGWindowID : nil
+    })
+}
+func focusedWindowWid() -> CGWindowID? {
+    guard let app = NSWorkspace.shared.frontmostApplication, app.processIdentifier != getpid() else { return nil }
+    let axApp = AXUIElementCreateApplication(app.processIdentifier)
+    AXUIElementSetMessagingTimeout(axApp, 0.1)
+    guard let w: AXUIElement = attr(axApp, kAXFocusedWindowAttribute) else { return nil }
+    var wid: CGWindowID = 0
+    return _AXUIElementGetWindow(w, &wid) == .success && wid != 0 ? wid : nil
+}
+
+// Minimizing happens on mouse-up, so a mouse-down on a yellow button (or a title-bar double-click) leaves time to
+// take the window's picture first.
+func captureBeforeMinimize(at point: CGPoint, doubleClick: Bool) {
+    var hit: AXUIElement?
+    let system = AXUIElementCreateSystemWide()
+    AXUIElementSetMessagingTimeout(system, 0.1)
+    guard AXUIElementCopyElementAtPosition(system, Float(point.x), Float(point.y), &hit) == .success, let hit else { return }
+    let role: String? = attr(hit, kAXSubroleAttribute)
+    guard role == kAXMinimizeButtonSubrole || (doubleClick && (attr(hit, kAXRoleAttribute) as String?) == kAXWindowRole),
+          let window: AXUIElement = role == kAXMinimizeButtonSubrole ? attr(hit, kAXWindowAttribute) : hit else { return }
+    var wid: CGWindowID = 0
+    if _AXUIElementGetWindow(window, &wid) == .success, wid != 0 { captureThumbs([wid]) }
+}
+
+// Windows that were already minimized before NirTab ever saw them have no picture, and macOS can't capture a
+// minimized window. This restores each one briefly, takes its picture, and minimizes it again.
+func captureMissingPreviews(done: @escaping (Int) -> Void = { _ in }) {
+    let missing = listWindows(includeExcluded: true).filter { $0.minimized && $0.ax != nil && $0.wid != 0 && thumb($0.wid) == nil }
+    func step(_ i: Int) {
+        guard i < missing.count, let ax = missing[i].ax else { done(missing.count); return }
+        AXUIElementSetAttributeValue(ax, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {  // wait for the restore animation
+            captureThumbs([missing[i].wid])
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                AXUIElementSetAttributeValue(ax, kAXMinimizedAttribute as CFString, kCFBooleanTrue)
+                step(i + 1)
+            }
+        }
+    }
+    step(0)
+}
+
+// Switching or opening windows inside one app fires no app-switch notification, so watch the front app directly:
+// a window focused or opened there gets a picture shortly after, before it can be minimized.
+var frontAppObserver: AXObserver?
+var onFrontWindowChanged: () -> Void = {}
+func watchFrontApp() {
+    if let old = frontAppObserver {
+        CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(old), .defaultMode)
+        frontAppObserver = nil
+    }
+    guard let app = NSWorkspace.shared.frontmostApplication, app.processIdentifier != getpid() else { return }
+    var observer: AXObserver?
+    guard AXObserverCreate(app.processIdentifier, { _, _, _, _ in onFrontWindowChanged() }, &observer) == .success,
+          let observer else { return }
+    let axApp = AXUIElementCreateApplication(app.processIdentifier)
+    for n in [kAXFocusedWindowChangedNotification, kAXMainWindowChangedNotification, kAXWindowCreatedNotification] {
+        AXObserverAddNotification(observer, axApp, n as CFString, nil)
+    }
+    CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
+    frontAppObserver = observer
 }
 
 func onScreenWids() -> Set<CGWindowID> {
@@ -516,6 +587,7 @@ final class Switcher {
     var tileW: CGFloat = 260
     var thumbH: CGFloat { (tileW * 0.6).rounded() }
     var refreshWork: DispatchWorkItem?
+    var frontWork: DispatchWorkItem?
     var mem: [pid_t: UInt64] = [:]
 
     init() {
@@ -571,16 +643,23 @@ final class Switcher {
         // Keep last pictures fresh so windows minimized later still have a preview.
         nc.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] _ in
             self?.scheduleThumbRefresh()
+            watchFrontApp()
         }
+        onFrontWindowChanged = { [weak self] in self?.scheduleFrontRefresh() }
+        watchFrontApp()
         // The window you're working in changes without any app switch; refresh just the frontmost app's windows.
         Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] _ in
-            guard self?.open == false, let front = NSWorkspace.shared.frontmostApplication?.processIdentifier else { return }
-            let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
-            captureThumbs(Set(info.compactMap { w in
-                (w[kCGWindowOwnerPID as String] as? pid_t) == front && (w[kCGWindowLayer as String] as? Int) == 0
-                    ? w[kCGWindowNumber as String] as? CGWindowID : nil
-            }))
+            guard self?.open == false else { return }
+            captureThumbs(onScreenWids())  // every display, so windows that never come to the front still have a picture
         }
+    }
+
+    func scheduleFrontRefresh() {
+        guard Prefs.previews, !open else { return }
+        frontWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in if self?.open == false { captureThumbs(frontWindowWids()) } }
+        frontWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
     }
 
     func scheduleThumbRefresh() {
@@ -640,6 +719,7 @@ final class Switcher {
         // Default retains auto-fitting; custom fixes the requested column count unless the display is too narrow.
         tileW = Prefs.layout == "list" ? min(600, f.width * 0.86) : Prefs.size
         var cols = 1
+        defer { columns = cols }
         if Prefs.layout == "custom" {
             cols = customColumns(Prefs.columns, count: wins.count, screenWidth: f.width)
             tileW = min(tileW, (f.width * 0.92 - 44 - CGFloat(cols - 1) * 10) / CGFloat(cols))
@@ -677,7 +757,7 @@ final class Switcher {
         let items = columns == 1 && Prefs.layout != "list" ? [("\(hold)⇥", "Next"), ("esc", "Cancel")]
             : Prefs.layout == "list" || columns == 2
             ? [("\(hold)⇥", "Next"), ("W", "Close"), ("⇧Q", "Force quit"), ("esc", "Cancel")]
-            : [("\(hold)⇥", "Next"), ("W", "Close"), ("M", "Minimize"), ("F", "Maximize"), ("H", "Hide"), ("Q", "Quit"), ("⇧Q", "Force quit"), ("esc", "Cancel")]
+            : [("\(hold)⇥", "Next"), ("←↑↓→", "Move"), ("W", "Close"), ("M", "Minimize"), ("F", "Maximize"), ("H", "Hide"), ("Q", "Quit"), ("⇧Q", "Force quit"), ("esc", "Cancel")]
         let views = items.map { k, t -> NSView in
             let l = NSTextField(labelWithString: t)
             l.font = .systemFont(ofSize: 10.5, weight: .medium)
@@ -845,6 +925,17 @@ final class Switcher {
     func highlight() { for (i, t) in tiles.enumerated() { t.isSelected = i == sel } }
 
     var selected: Win? { wins.indices.contains(sel) ? wins[sel] : nil }
+    var columns = 1  // tiles per row in the current grid, for ↑/↓
+    // ↑/↓: same column in the row above/below, wrapping to the other end of that column (list layout: one step).
+    func moveRow(_ d: Int) {
+        guard !wins.isEmpty else { return }
+        let target = sel + d * columns
+        if wins.indices.contains(target) { sel = target }
+        else if d > 0 { sel %= columns }
+        else { let col = sel % columns; sel = (wins.count - 1 - col) / columns * columns + col }
+        highlight()
+        grid.scrollToVisible(tiles[sel].convert(tiles[sel].bounds, to: grid))
+    }
     func move(_ d: Int) {
         guard !wins.isEmpty else { return }
         sel = (sel + d + wins.count) % wins.count
@@ -1378,6 +1469,7 @@ if CommandLine.arguments.contains("--test-extras") {
     exit(0)
 }
 if CommandLine.arguments.contains("--test-caffeinate") { _ = NSApplication.shared; testCaffeinate(); exit(0) }
+if CommandLine.arguments.contains("--test-coffee-break") { _ = NSApplication.shared; testCoffeeBreak(); exit(0) }
 if CommandLine.arguments.contains("--test-battery") { _ = NSApplication.shared; testBattery(); exit(0) }
 if CommandLine.arguments.contains("--test-capture") { _ = NSApplication.shared; testCapture(); exit(0) }
 if CommandLine.arguments.contains("--test-styles") {
@@ -1702,6 +1794,10 @@ let callback: CGEventTapCallBack = { _, type, event, _ in
         if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
         return Unmanaged.passUnretained(event)
     }
+    if type == .leftMouseDown && !switcher.open && Prefs.previews {
+        let point = event.location, double = event.getIntegerValueField(.mouseEventClickState) == 2
+        DispatchQueue.main.async { captureBeforeMinimize(at: point, doubleClick: double) }
+    }
     if defaults.bool(forKey: "rectangleDragSnap") {
         let point = event.location
         if type == .leftMouseDown { DispatchQueue.main.async { rectangleDragBegin(point) } }
@@ -1727,6 +1823,11 @@ let callback: CGEventTapCallBack = { _, type, event, _ in
             DispatchQueue.main.async { captureScreenshot() }
         }
         return nil
+    }
+    // ⌘M: grab the window's picture now, while the minimize animation still shows it (minimized windows can't be captured).
+    if !switcher.open && type == .keyDown && code == 46 && modifiers == .maskCommand
+        && event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
+        DispatchQueue.main.async { if let wid = focusedWindowWid() { captureThumbs([wid]) } }
     }
     if !switcher.open, let action = customAction(code, modifiers), type == .keyDown || type == .keyUp {
         if type == .keyDown { DispatchQueue.main.async { performWindowAction(action) } }
@@ -1772,6 +1873,11 @@ let callback: CGEventTapCallBack = { _, type, event, _ in
         return nil
     case .keyDown where switcher.open && (code == 123 || code == 124):  // ← →
         DispatchQueue.main.async { switcher.move(code == 123 ? -1 : 1) }
+        return nil
+    case .keyDown where switcher.open && (code == 125 || code == 126):  // ↓ ↑
+        DispatchQueue.main.async { switcher.moveRow(code == 126 ? -1 : 1) }
+        return nil
+    case .keyUp where switcher.open && [123, 124, 125, 126].contains(code):
         return nil
     case .keyDown where switcher.open && [12, 13, 46, 3, 4].contains(code):  // Q W M F H → act on selected, never the frontmost app
         let force = event.flags.contains(.maskShift)
@@ -1862,9 +1968,12 @@ final class MenuBar: NSObject, NSMenuDelegate {
         }
         menu.addItem(.separator())
         add(menu, "Capture & Annotate…", #selector(capture))
-        add(menu, "Capture Area / Window / Record…", #selector(systemCapture))
         add(menu, "Battery Health (coconutBattery-style)…", #selector(showBattery))
+        let coffee = NSMenuItem(title: "Coffee Break", action: nil, keyEquivalent: "")
+        let breaks = NSMenu(); breaks.delegate = coffeeBreak; coffeeBreak.menuNeedsUpdate(breaks)
+        coffee.submenu = breaks; menu.addItem(coffee)
         add(menu, "Install DisplayLink Manager…", #selector(installDisplayLink))
+        add(menu, "Capture Missing Previews (restores minimized windows briefly)", #selector(fillPreviews))
         let experimental = NSMenu()
         let clips = add(experimental, "Clipboard history (⌥⌘V)", #selector(toggleClipboard))
         clips.state = defaults.bool(forKey: "clipboardEnabled") ? .on : .off
@@ -1879,6 +1988,8 @@ final class MenuBar: NSObject, NSMenuDelegate {
         timer.state = defaults.bool(forKey: "pomodoroEnabled") ? .on : .off
         let awake = add(experimental, "Keep Mac awake (Caffeinate)", #selector(toggleCaffeinate))
         awake.state = defaults.bool(forKey: "caffeinateEnabled") ? .on : .off
+        let ai = add(experimental, "Claude / ChatGPT / Gemini / ArtCraft menu-bar icons", #selector(toggleAIIcons))
+        ai.state = defaults.bool(forKey: "aiIconsEnabled") ? .on : .off
         let group = NSMenuItem(title: "Experimental Features", action: nil, keyEquivalent: "")
         group.submenu = experimental
         menu.addItem(group)
@@ -1899,12 +2010,6 @@ final class MenuBar: NSObject, NSMenuDelegate {
     @objc func settings() { openSettings() }
     @objc func capture() { openCapture() }
     @objc func showBattery() { batteryMonitor.open() }
-    @objc func systemCapture() {
-        let app = URL(fileURLWithPath: "/System/Applications/Utilities/Screenshot.app")
-        NSWorkspace.shared.openApplication(at: app, configuration: .init()) { _, error in
-            if let error { DispatchQueue.main.async { showAlert("Couldn't open Screenshot", error.localizedDescription) } }
-        }
-    }
     @objc func runLayout(_ sender: NSMenuItem) {
         if let id = sender.representedObject as? String { rectanglePerform(id) }
     }
@@ -1921,6 +2026,16 @@ final class MenuBar: NSObject, NSMenuDelegate {
         let on = !defaults.bool(forKey: "clipboardIconEnabled")
         defaults.set(on, forKey: "clipboardIconEnabled")
         clipboardStatus.setVisible(on && defaults.bool(forKey: "clipboardEnabled"))
+    }
+    @objc func fillPreviews() {
+        captureMissingPreviews { n in
+            showAlert("Previews", n == 0 ? "Every minimized window already has a preview." : "Captured previews for \(n) minimized window\(n == 1 ? "" : "s").")
+        }
+    }
+    @objc func toggleAIIcons() {
+        let on = !defaults.bool(forKey: "aiIconsEnabled")
+        defaults.set(on, forKey: "aiIconsEnabled")
+        aiStatus.setVisible(on)
     }
     @objc func installDisplayLink() {
         if !NSWorkspace.shared.open(URL(string: "https://www.synaptics.com/products/displaylink-graphics/downloads/macos")!) {
@@ -1970,6 +2085,7 @@ if defaults.bool(forKey: "clipboardEnabled") { clipboard.setEnabled(true) }
 if defaults.bool(forKey: "pomodoroEnabled") { pomodoro.setEnabled(true) }
 if defaults.bool(forKey: "caffeinateEnabled") { caffeinate.setEnabled(true) }
 menuBar.working = menuBar.ax && startTap()
+aiStatus.setVisible(defaults.bool(forKey: "aiIconsEnabled"))
 if !menuBar.ax {
     _ = AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary)
     print("NirTab: waiting for Accessibility (System Settings → Privacy & Security)…")
@@ -2040,10 +2156,11 @@ if CommandLine.arguments.contains("--test-rectangle-ui") {
     precondition(items.count == rectangleActions.count)
     precondition(Set(items.compactMap { $0.representedObject as? String }) == Set(rectangleActions.map(\.0)))
     precondition(menu.item(withTitle: "Capture & Annotate…") != nil)
+    precondition(menu.item(withTitle: "Coffee Break")?.submenu?.item(withTitle: "5-minute coffee break")?.target === coffeeBreak)
     precondition(menu.item(withTitle: "Battery Health (coconutBattery-style)…")?.action == #selector(MenuBar.showBattery))
     precondition(menu.item(withTitle: "Install DisplayLink Manager…")?.action == #selector(MenuBar.installDisplayLink))
     precondition(menu.item(withTitle: "Experimental Features")?.submenu?.item(withTitle: "Show clipboard menu-bar icon") != nil)
-    precondition(menu.item(withTitle: "Capture Area / Window / Record…") != nil)
+    precondition(menu.item(withTitle: "Capture Area / Window / Record…") == nil)  // one capture item: Capture & Annotate
     precondition(menu.item(withTitle: "Experimental Features")?.submenu?.item(withTitle: "Keep Mac awake (Caffeinate)") != nil)
     openSettings()
     precondition(settingsWindow?.isVisible == true)

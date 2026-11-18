@@ -314,6 +314,141 @@ final class Pomodoro: NSObject, NSMenuDelegate {
 
 let pomodoro = Pomodoro()
 
+// One-shot coffee breaks, independent of Pomodoro and keep-awake assertions.
+final class CoffeeBreak: NSObject, NSMenuDelegate {
+    private(set) var item: NSStatusItem?
+    private(set) var deadline: Date?
+    private(set) var paused: TimeInterval?
+    private(set) var timer: Timer?
+    private(set) var popup: NSPanel?
+
+    @objc func start(_ sender: NSMenuItem) { start(minutes: sender.tag) }
+    func start(minutes: Int, now: Date = Date()) {
+        guard (1...60).contains(minutes) else { return }
+        cancel()
+        deadline = now.addingTimeInterval(Double(minutes) * 60)
+        item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        let menu = NSMenu(); menu.delegate = self; item?.menu = menu
+        timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in self?.tick() }
+        RunLoop.main.add(timer!, forMode: .common)
+        update(now: now)
+    }
+    func tick(now: Date = Date(), showPopup: Bool = true) {
+        if let deadline, now >= deadline {
+            cancel()
+            if showPopup { finishedPopup(); NSSound.beep() }
+        } else { update(now: now) }
+    }
+    @objc func menuPauseResume() { pauseResume(now: Date()) }
+    func pauseResume(now: Date) {
+        if let deadline {
+            guard now < deadline else { tick(now: now); return }
+            paused = deadline.timeIntervalSince(now); self.deadline = nil
+        } else if let paused {
+            deadline = now.addingTimeInterval(paused); self.paused = nil
+        }
+        update(now: now)
+    }
+    @objc func cancel() {
+        timer?.invalidate(); timer = nil
+        deadline = nil; paused = nil
+        if let item { NSStatusBar.system.removeStatusItem(item) }
+        item = nil
+        popup?.close(); popup = nil
+    }
+    private func update(now: Date) {
+        let image = NSImage(systemSymbolName: "cup.and.saucer.fill", accessibilityDescription: "Coffee break timer")
+        image?.isTemplate = true
+        item?.button?.image = image
+        item?.button?.title = " " + timerText(deadline?.timeIntervalSince(now) ?? paused ?? 0) + (paused == nil ? "" : " ⏸")
+        item?.button?.toolTip = "Coffee break — click to pause, resume, restart or cancel"
+    }
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        if item != nil {
+            let header = NSMenuItem(title: "Coffee break · " + (paused == nil ? "running" : "paused"), action: nil, keyEquivalent: "")
+            menu.addItem(header)
+            let pause = NSMenuItem(title: paused == nil ? "Pause" : "Resume", action: #selector(menuPauseResume), keyEquivalent: "")
+            pause.target = self; menu.addItem(pause)
+            let stop = NSMenuItem(title: "Cancel break", action: #selector(cancel), keyEquivalent: "")
+            stop.target = self; menu.addItem(stop)
+            menu.addItem(.separator())
+        }
+        for minutes in [5, 10, 15] {
+            let row = NSMenuItem(title: "\(minutes)-minute coffee break", action: #selector(start(_:)), keyEquivalent: "")
+            row.tag = minutes; row.target = self; menu.addItem(row)
+        }
+    }
+    private func finishedPopup() {
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 340, height: 180),
+                            styleMask: [.titled, .closable, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel.title = "NirTab · Coffee break finished"
+        panel.isReleasedWhenClosed = false
+        panel.level = .floating
+        panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+        panel.contentView = NSHostingView(rootView: VStack(spacing: 12) {
+            Image(systemName: "cup.and.saucer.fill").font(.system(size: 34)).foregroundStyle(.brown)
+            Text("Coffee break finished").font(.title2.bold())
+            Text("Ready when you are. No focus timer starts.").foregroundStyle(.secondary)
+            Button("Done") { [weak self] in self?.cancel() }
+        }.frame(width: 340, height: 180))
+        popup = panel
+        let screen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? NSScreen.main
+        if let frame = screen?.visibleFrame {
+            panel.setFrameOrigin(NSPoint(x: frame.midX - panel.frame.width / 2, y: frame.midY - panel.frame.height / 2))
+        }
+        panel.orderFrontRegardless()
+    }
+}
+let coffeeBreak = CoffeeBreak()
+
+func testCoffeeBreak() {
+    let clock = CoffeeBreak(), menu = NSMenu(), now = Date()
+    defer { clock.cancel() }
+    clock.menuNeedsUpdate(menu)
+    precondition(menu.items.count == 3)
+    clock.start(minutes: 0); precondition(clock.item == nil)
+    menu.performActionForItem(at: 0)
+    precondition(clock.item?.button?.image != nil && clock.timer?.isValid == true)
+    clock.start(minutes: 5, now: now)
+    precondition(clock.item?.button?.title == " 05:00")
+    clock.pauseResume(now: now.addingTimeInterval(30))
+    precondition(clock.deadline == nil && clock.paused == 270)
+    clock.tick(now: now.addingTimeInterval(600))
+    precondition(clock.paused == 270 && clock.popup == nil)
+    clock.menuNeedsUpdate(menu)
+    precondition(menu.item(withTitle: "Resume") != nil)
+    clock.pauseResume(now: now.addingTimeInterval(600))
+    precondition(clock.deadline == now.addingTimeInterval(870) && clock.paused == nil)
+    clock.tick(now: now.addingTimeInterval(870), showPopup: false)
+    precondition(clock.item == nil && clock.timer == nil && clock.deadline == nil)
+    clock.start(minutes: 10, now: now)
+    clock.start(minutes: 15, now: now)
+    precondition(clock.item?.button?.title == " 15:00")
+    clock.menuNeedsUpdate(menu)
+    menu.performActionForItem(at: menu.index(of: menu.item(withTitle: "Pause")!))
+    precondition(clock.paused != nil && clock.deadline == nil)
+    clock.menuNeedsUpdate(menu)
+    menu.performActionForItem(at: menu.index(of: menu.item(withTitle: "Resume")!))
+    precondition(clock.paused == nil && clock.deadline != nil)
+    menu.performActionForItem(at: menu.index(of: menu.item(withTitle: "Cancel break")!))
+    precondition(clock.item == nil && clock.timer == nil)
+    clock.start(minutes: 1, now: now.addingTimeInterval(-60))
+    RunLoop.main.run(until: Date().addingTimeInterval(1.2))
+    precondition(clock.popup?.isVisible == true && clock.item == nil && clock.deadline == nil)
+    if let view = clock.popup?.contentView,
+       let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+        view.cacheDisplay(in: view.bounds, to: rep)
+        let directory = ProcessInfo.processInfo.environment["TMPDIR"].map { URL(fileURLWithPath: $0) }
+            ?? FileManager.default.temporaryDirectory
+        let path = directory.appendingPathComponent("nirtab-coffee-break.png")
+        try! rep.representation(using: .png, properties: [:])!.write(to: path)
+        print("coffee popup: \(path.path)")
+    }
+    clock.cancel(); precondition(clock.popup == nil)
+    print("coffee break PASS: presets, countdown, pause/resume, restart, cancel, completion popup, cleanup")
+}
+
 func testExtras() {
     let icon = ClipboardStatus()
     icon.setVisible(true)
@@ -378,3 +513,173 @@ func testExtras() {
     precondition(again.clips.count == 4 && again.clips.contains { $0.items.first?[NSPasteboard.PasteboardType.png.rawValue] != nil })
     print("extras PASS: clipboard icon click, hide/restore, text, image, file, pin, persistence, copy, timer")
 }
+
+// MARK: - AI apps: optional menu-bar icons that open Claude, ChatGPT, Gemini and ArtCraft.
+// Each opens the installed Mac app (or a Chrome web app of that name). If it's missing, NirTab offers to download and
+// install it (checked by Gatekeeper first), then opens it; apps with no Mac download open their website.
+struct AIApp {
+    let name: String; let bundles: [String]; let names: [String]; let web: String
+    let download: (() async throws -> URL)?  // official .dmg; nil = website only
+}
+let aiApps = [
+    AIApp(name: "Claude", bundles: ["com.anthropic.claudefordesktop"], names: ["Claude"], web: "https://claude.ai",
+          download: { URL(string: "https://claude.ai/api/desktop/darwin/universal/dmg/latest/redirect")! }),
+    AIApp(name: "ChatGPT", bundles: ["com.openai.chat"], names: ["ChatGPT"], web: "https://chatgpt.com",
+          download: { URL(string: "https://persistent.oaistatic.com/sidekick/public/ChatGPT.dmg")! }),
+    AIApp(name: "Gemini", bundles: ["com.google.GeminiMacOS", "com.google.gemini"], names: ["Gemini"],
+          web: "https://gemini.google.com", download: nil),
+    AIApp(name: "ArtCraft", bundles: ["ai.storyteller.artcraft-launcher", "ai.artcraft.app"], names: ["ArtCraft Launcher", "ArtCraft"],
+          web: "https://getartcraft.com/download", download: {
+        // Latest release from the project's GitHub, the same file getartcraft.com/download links to.
+        let (data, _) = try await URLSession.shared.data(from: URL(string: "https://api.github.com/repos/storytold/artcraft/releases/latest")!)
+        let assets = (try JSONSerialization.jsonObject(with: data) as? [String: Any])?["assets"] as? [[String: Any]] ?? []
+        guard let link = assets.compactMap({ $0["browser_download_url"] as? String }).first(where: { $0.hasSuffix("_universal.dmg") }),
+              let url = URL(string: link) else { throw URLError(.fileDoesNotExist) }
+        return url
+    }),
+]
+func aiAppURL(_ app: AIApp) -> URL? {
+    for id in app.bundles { if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) { return url } }
+    let home = FileManager.default.homeDirectoryForCurrentUser.path
+    for dir in ["/Applications", "\(home)/Applications", "\(home)/Applications/Chrome Apps.localized"] {
+        for name in app.names where FileManager.default.fileExists(atPath: "\(dir)/\(name).app") {
+            return URL(fileURLWithPath: "\(dir)/\(name).app")
+        }
+    }
+    return nil
+}
+
+@discardableResult
+func runTool(_ path: String, _ args: [String]) -> (Int32, String) {
+    let p = Process(), pipe = Pipe()
+    p.executableURL = URL(fileURLWithPath: path); p.arguments = args
+    p.standardOutput = pipe; p.standardError = pipe
+    guard (try? p.run()) != nil else { return (-1, "") }
+    let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    p.waitUntilExit()
+    return (p.terminationStatus, out)
+}
+
+// Downloads the .dmg, mounts it, verifies the app with Gatekeeper (signed + notarized), copies it to /Applications
+// (or ~/Applications if that isn't writable) and returns the installed app.
+func installAIApp(_ app: AIApp) async throws -> URL {
+    guard let download = app.download else { throw URLError(.unsupportedURL) }
+    let (file, response) = try await URLSession.shared.download(from: try await download())
+    guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
+    let work = FileManager.default.temporaryDirectory.appendingPathComponent("nirtab-install-\(UUID())")
+    let mount = work.appendingPathComponent("mnt"), dmg = work.appendingPathComponent("app.dmg")
+    try FileManager.default.createDirectory(at: mount, withIntermediateDirectories: true)
+    try FileManager.default.moveItem(at: file, to: dmg)
+    defer {
+        runTool("/usr/bin/hdiutil", ["detach", mount.path, "-force", "-quiet"])
+        try? FileManager.default.removeItem(at: work)
+    }
+    guard runTool("/usr/bin/hdiutil", ["attach", dmg.path, "-nobrowse", "-readonly", "-noautoopen", "-mountpoint", mount.path]).0 == 0,
+          let bundle = try FileManager.default.contentsOfDirectory(atPath: mount.path).first(where: { $0.hasSuffix(".app") })
+    else { throw CocoaError(.fileReadCorruptFile) }
+    let source = mount.appendingPathComponent(bundle)
+    let check = runTool("/usr/sbin/spctl", ["--assess", "--type", "execute", source.path])
+    guard check.0 == 0 else { throw NSError(domain: "NirTab", code: 1, userInfo: [NSLocalizedDescriptionKey: "Gatekeeper rejected \(bundle): \(check.1)"]) }
+    let user = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications")
+    let dir = FileManager.default.isWritableFile(atPath: "/Applications") ? URL(fileURLWithPath: "/Applications") : user
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let target = dir.appendingPathComponent(bundle)
+    guard runTool("/usr/bin/ditto", [source.path, target.path]).0 == 0 else { throw CocoaError(.fileWriteUnknown) }
+    return target
+}
+
+// The `<link rel="icon">` of a web page, resolved against the page URL.
+func pageIconURL(_ html: String, base: URL) -> URL? {
+    for tag in html.components(separatedBy: "<link").dropFirst() {
+        let t = String(tag.prefix { $0 != ">" })
+        guard t.contains("rel=\"icon\"") || t.contains("apple-touch-icon"), let r = t.range(of: "href=\"") else { continue }
+        return URL(string: String(t[r.upperBound...].prefix { $0 != "\"" }), relativeTo: base)?.absoluteURL
+    }
+    return nil
+}
+// App icon if installed; else the website's own icon (downloaded once, cached); a sparkle until that arrives.
+func aiIcon(_ app: AIApp, update: @escaping (NSImage) -> Void) -> NSImage {
+    let size = NSSize(width: 18, height: 18)
+    if let url = aiAppURL(app) {
+        let icon = NSWorkspace.shared.icon(forFile: url.path); icon.size = size; return icon
+    }
+    let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("NirTab")
+    let cache = dir.appendingPathComponent("ai-\(app.name).png")
+    if let icon = NSImage(contentsOf: cache) { icon.size = size; return icon }
+    let page = URL(string: app.web)!
+    URLSession.shared.dataTask(with: page) { data, _, _ in
+        guard let html = data.flatMap({ String(data: $0, encoding: .utf8) }), let iconURL = pageIconURL(html, base: page) else { return }
+        URLSession.shared.dataTask(with: iconURL) { data, _, _ in
+            guard let data, let icon = NSImage(data: data) else { return }
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try? data.write(to: cache)
+            DispatchQueue.main.async { icon.size = size; update(icon) }
+        }.resume()
+    }.resume()
+    let placeholder = NSImage(systemSymbolName: "sparkle", accessibilityDescription: app.name)!
+    placeholder.isTemplate = true
+    return placeholder
+}
+
+final class AIStatus: NSObject {
+    private(set) var items: [NSStatusItem] = []
+    func setVisible(_ visible: Bool) {
+        items.forEach { NSStatusBar.system.removeStatusItem($0) }
+        items = []
+        guard visible else { return }
+        for (i, app) in aiApps.enumerated().reversed() {  // status items fill right to left; keep the list order
+            let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+            item.button?.image = aiIcon(app) { [weak item] icon in item?.button?.image = icon }
+            item.button?.toolTip = "Open \(app.name)"
+            item.button?.tag = i
+            item.button?.target = self
+            item.button?.action = #selector(open(_:))
+            items.append(item)
+        }
+    }
+    private var installing: Set<String> = []
+    @objc func open(_ sender: NSStatusBarButton) {
+        let app = aiApps[sender.tag]
+        if let url = aiAppURL(app) { NSWorkspace.shared.openApplication(at: url, configuration: .init()); return }
+        guard app.download != nil else { NSWorkspace.shared.open(URL(string: app.web)!); return }
+        guard !installing.contains(app.name) else { return }
+        let ask = NSAlert()
+        ask.messageText = "\(app.name) isn't installed"
+        ask.informativeText = "Download \(app.name) from its official site, install it in Applications and open it?"
+        ask.addButton(withTitle: "Install"); ask.addButton(withTitle: "Open Website"); ask.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        switch ask.runModal() {
+        case .alertFirstButtonReturn: break
+        case .alertSecondButtonReturn: NSWorkspace.shared.open(URL(string: app.web)!); return
+        default: return
+        }
+        installing.insert(app.name)
+        let icon = sender.image
+        sender.image = NSImage(systemSymbolName: "arrow.down.circle", accessibilityDescription: "Installing \(app.name)")
+        sender.toolTip = "Installing \(app.name)…"
+        Task {
+            let result = await Task.detached { () -> Result<URL, Error> in
+                do { return .success(try await installAIApp(app)) } catch { return .failure(error) }
+            }.value
+            await MainActor.run {
+                self.installing.remove(app.name)
+                sender.toolTip = "Open \(app.name)"
+                switch result {
+                case .success(let url):
+                    let installed = NSWorkspace.shared.icon(forFile: url.path)
+                    installed.size = NSSize(width: 18, height: 18)
+                    sender.image = installed
+                    NSWorkspace.shared.openApplication(at: url, configuration: .init())
+                case .failure(let error):
+                    sender.image = icon
+                    let fail = NSAlert()
+                    fail.messageText = "Couldn't install \(app.name)"
+                    fail.informativeText = "\(error.localizedDescription)\n\nOpening the download page instead."
+                    fail.runModal()
+                    NSWorkspace.shared.open(URL(string: app.web.hasSuffix("/download") ? app.web : app.web + "/download")!)
+                }
+            }
+        }
+    }
+}
+let aiStatus = AIStatus()
