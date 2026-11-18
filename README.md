@@ -89,7 +89,7 @@ iPhone/iPad monitoring, battery history and coconutBattery's other features are 
 its setup instructions; NirTab does not silently install drivers or change Screen Recording permissions.
 
 **Capture & Annotate…** (menu bar, or `open -g 'nirtab://capture'`) captures the display under the pointer at full
-resolution. Draw arrows/rectangles/circles, place text, undo/reset, then copy a PNG (also added to clipboard history if enabled)
+resolution. Draw arrows/rectangles/circles, place text, pick a line width (3 sizes) and shadow (off + 3 levels), crop, undo/reset, then copy a PNG (also added to clipboard history if enabled)
 or save it; **Copy Text** uses macOS Vision OCR to copy recognized text. This is an independent implementation inspired
 by Capso's workflow; **not a copy of Capso's BSL source**.
 Capso's custom area/window/scroll capture tools, video/GIF editor, webcam, visual OCR selection, translation, cloud sharing, and full

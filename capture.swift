@@ -8,13 +8,20 @@ private struct CaptureMark {
     let start: CGPoint
     let end: CGPoint
     let text: String
+    var width: CGFloat = 6   // stroke width in image pixels
+    var shadow = 0           // 0 off, 1 soft, 2 medium, 3 strong
 }
+let captureWidths: [CGFloat] = [3, 6, 11]
+// Shadow (offset, blur, opacity) per level, in image pixels.
+let captureShadows: [(CGFloat, CGFloat, CGFloat)] = [(0, 0, 0), (2, 5, 0.45), (5, 12, 0.6), (9, 22, 0.75)]
 
 // Coordinates are image pixels (not preview points), so export never depends on window size.
 private final class CaptureCanvas: NSView {
     let image: CGImage
     var tool: CaptureTool = .arrow
     var text = ""
+    var lineWidth: CGFloat = 6
+    var shadowLevel = 0
     var marks: [CaptureMark] = [] { didSet { needsDisplay = true } }
     // Crop is non-destructive: marks stay in full-image pixels; only export and OCR use the cropped area.
     var crop: CGRect? { didSet { needsDisplay = true } }
@@ -47,12 +54,13 @@ private final class CaptureCanvas: NSView {
     override func mouseDown(with event: NSEvent) {
         let p = pixelPoint(convert(event.locationInWindow, from: nil))
         if tool == .text {
-            if !text.isEmpty { marks.append(CaptureMark(tool: .text, start: p, end: p, text: text)) }
+            if !text.isEmpty { marks.append(CaptureMark(tool: .text, start: p, end: p, text: text, width: lineWidth, shadow: shadowLevel)) }
         } else { dragStart = p }
     }
     override func mouseDragged(with event: NSEvent) {
         guard let start = dragStart else { return }
-        provisional = CaptureMark(tool: tool, start: start, end: pixelPoint(convert(event.locationInWindow, from: nil)), text: "")
+        provisional = CaptureMark(tool: tool, start: start, end: pixelPoint(convert(event.locationInWindow, from: nil)), text: "",
+                                  width: lineWidth, shadow: shadowLevel)
         needsDisplay = true
     }
     override func mouseUp(with event: NSEvent) {
@@ -62,7 +70,7 @@ private final class CaptureCanvas: NSView {
             let r = CGRect(x: min(start.x, end.x), y: min(start.y, end.y), width: abs(end.x - start.x), height: abs(end.y - start.y))
             if r.width >= 8 && r.height >= 8 { crop = r; cropAfterMarks = marks.count }
         } else if hypot(end.x - start.x, end.y - start.y) > 2 {
-            marks.append(CaptureMark(tool: tool, start: start, end: end, text: ""))
+            marks.append(CaptureMark(tool: tool, start: start, end: end, text: "", width: lineWidth, shadow: shadowLevel))
         }
         dragStart = nil; provisional = nil; needsDisplay = true
     }
@@ -94,8 +102,15 @@ private final class CaptureCanvas: NSView {
         for mark in marks + (provisional.map { [$0] } ?? []) where mark.tool != .crop {
             context.saveGState()
             context.setStrokeColor(NSColor.systemRed.cgColor)
-            context.setLineWidth(4)
+            context.setLineWidth(mark.width)
             context.setLineCap(.round)
+            context.setLineJoin(.round)
+            if mark.shadow > 0 {
+                // Shadow values are in device space, so scale them by the current pixel transform.
+                let (offset, blur, alpha) = captureShadows[min(mark.shadow, 3)], k = abs(context.ctm.a)
+                context.setShadow(offset: CGSize(width: offset * k, height: -offset * k), blur: blur * k,
+                                  color: NSColor.black.withAlphaComponent(alpha).cgColor)
+            }
             let box = CGRect(x: min(mark.start.x, mark.end.x), y: min(mark.start.y, mark.end.y),
                              width: abs(mark.end.x - mark.start.x), height: abs(mark.end.y - mark.start.y))
             switch mark.tool {
@@ -107,17 +122,17 @@ private final class CaptureCanvas: NSView {
                 context.strokeEllipse(in: box)
             case .arrow:
                 let angle = atan2(mark.end.y - mark.start.y, mark.end.x - mark.start.x)
+                let head = 14 + mark.width * 2.6
+                // One path (shaft + open head) so the shadow is drawn once, without dark overlaps.
                 context.move(to: mark.start); context.addLine(to: mark.end)
-                for offset in [-CGFloat.pi / 6, CGFloat.pi / 6] {
-                    context.move(to: mark.end)
-                    context.addLine(to: CGPoint(x: mark.end.x - 20 * cos(angle + offset),
-                                                y: mark.end.y - 20 * sin(angle + offset)))
-                }
+                context.move(to: CGPoint(x: mark.end.x - head * cos(angle - .pi / 6), y: mark.end.y - head * sin(angle - .pi / 6)))
+                context.addLine(to: mark.end)
+                context.addLine(to: CGPoint(x: mark.end.x - head * cos(angle + .pi / 6), y: mark.end.y - head * sin(angle + .pi / 6)))
                 context.strokePath()
             case .text:
                 // NSString drawing uses the current AppKit graphics context, including the pixel transform.
                 (mark.text as NSString).draw(at: mark.start, withAttributes: [
-                    .font: NSFont.boldSystemFont(ofSize: 28), .foregroundColor: NSColor.systemRed
+                    .font: NSFont.boldSystemFont(ofSize: 18 + mark.width * 2), .foregroundColor: NSColor.systemRed
                 ])
             }
             context.restoreGState()
@@ -140,6 +155,45 @@ private final class CaptureCanvas: NSView {
     }
 }
 
+// Large, icon-only segmented control; each segment's name is its tooltip.
+private func iconSegments(_ items: [(NSImage?, String)], width: CGFloat) -> NSSegmentedControl {
+    let c = NSSegmentedControl(images: items.map { $0.0 ?? NSImage() }, trackingMode: .selectOne, target: nil, action: nil)
+    c.controlSize = .large
+    c.segmentStyle = .capsule
+    for (i, item) in items.enumerated() {
+        c.setWidth(width, forSegment: i)
+        c.setToolTip(item.1, forSegment: i)
+        c.setImageScaling(.scaleNone, forSegment: i)
+    }
+    return c
+}
+// A diagonal stroke of the given thickness, for the width picker.
+private func lineIcon(_ thickness: CGFloat) -> NSImage {
+    let img = NSImage(size: CGSize(width: 20, height: 20), flipped: false) { r in
+        let p = NSBezierPath(); p.move(to: CGPoint(x: 4, y: 4)); p.line(to: CGPoint(x: 16, y: 16))
+        p.lineWidth = thickness; p.lineCapStyle = .round
+        NSColor.black.setStroke(); p.stroke(); return true
+    }
+    img.isTemplate = true
+    return img
+}
+// A square with a shadow of increasing depth (level 0: square only), for the shadow picker.
+private func shadowIcon(_ level: Int) -> NSImage {
+    let img = NSImage(size: CGSize(width: 20, height: 20), flipped: false) { _ in
+        if level > 0 {
+            let d = CGFloat(level) * 1.5
+            NSColor.black.withAlphaComponent(0.2 + 0.18 * CGFloat(level)).setFill()
+            NSBezierPath(roundedRect: CGRect(x: 4 + d, y: 4 - d + 1, width: 11, height: 11), xRadius: 2.5, yRadius: 2.5).fill()
+        }
+        let box = NSBezierPath(roundedRect: CGRect(x: 3.5, y: 5.5, width: 11, height: 11), xRadius: 2.5, yRadius: 2.5)
+        box.lineWidth = 1.6
+        NSColor.black.setStroke(); box.stroke()
+        return true
+    }
+    img.isTemplate = true
+    return img
+}
+
 // Keeps the image centered in the scroll area, with a margin, at any window size.
 private final class CenteringView: NSView {
     override var isFlipped: Bool { true }
@@ -158,31 +212,29 @@ private final class CaptureEditor: NSObject, NSWindowDelegate, NSTextFieldDelega
     let canvas: CaptureCanvas
     private let tools: NSSegmentedControl
     private let input = NSTextField(string: "")
+    private let widths: NSSegmentedControl
+    private let shadows: NSSegmentedControl
     init(image: CGImage) {
         let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main
         let available = screen?.visibleFrame.size ?? CGSize(width: 1000, height: 700)
-        let width = min(1240, max(1000, available.width * 0.85)), height = min(840, available.height * 0.88)
+        let width = min(1300, max(1180, available.width * 0.85)), height = min(840, available.height * 0.88)
         let scale = min((width - 60) / CGFloat(image.width), (height - 150) / CGFloat(image.height), 1)
         canvas = CaptureCanvas(image: image, size: CGSize(width: CGFloat(image.width) * scale,
                                                           height: CGFloat(image.height) * scale))
-        // Large icon + label segments for the tools.
+        // Icon-only segments; names are in tooltips.
         let toolInfo = [("Arrow", "arrow.up.right"), ("Box", "rectangle"), ("Circle", "circle"), ("Text", "textformat"), ("Crop", "crop")]
-        tools = NSSegmentedControl(labels: toolInfo.map(\.0), trackingMode: .selectOne, target: nil, action: nil)
-        tools.controlSize = .large
-        tools.segmentStyle = .capsule
-        for (i, (name, symbol)) in toolInfo.enumerated() {
-            tools.setImage(NSImage(systemSymbolName: symbol, accessibilityDescription: name)?
-                .withSymbolConfiguration(.init(pointSize: 15, weight: .semibold)), forSegment: i)
-            tools.setImageScaling(.scaleProportionallyDown, forSegment: i)
-            tools.setWidth(84, forSegment: i)
-        }
+        tools = iconSegments(toolInfo.map { (NSImage(systemSymbolName: $0.1, accessibilityDescription: $0.0)?
+            .withSymbolConfiguration(.init(pointSize: 17, weight: .semibold)), $0.0) }, width: 46)
+        widths = iconSegments(captureWidths.enumerated().map { i, _ in
+            (lineIcon(CGFloat([1.5, 3, 5.5][i])), ["Thin", "Medium", "Thick"][i] + " line") }, width: 40)
+        shadows = iconSegments((0...3).map { (shadowIcon($0), ["No shadow", "Soft shadow", "Medium shadow", "Strong shadow"][$0]) }, width: 40)
         window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: width, height: height),
                           styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
         super.init()
         window.title = "Capture"
         window.isReleasedWhenClosed = false  // The editor owns the window until windowWillClose clears it.
         window.delegate = self
-        window.minSize = CGSize(width: 980, height: 480)
+        window.minSize = CGSize(width: 1180, height: 480)
         window.titlebarAppearsTransparent = true
         window.appearance = NSAppearance(named: .darkAqua)
         window.backgroundColor = NSColor(calibratedWhite: 0.11, alpha: 1)
@@ -194,12 +246,20 @@ private final class CaptureEditor: NSObject, NSWindowDelegate, NSTextFieldDelega
         bar.edgeInsets = NSEdgeInsets(top: 12, left: 16, bottom: 12, right: 16)
         tools.target = self; tools.action = #selector(selectTool); tools.selectedSegment = 0
         bar.addArrangedSubview(tools)
+        // Width and shadow apply to new marks and are remembered between captures.
+        widths.target = self; widths.action = #selector(selectStyle)
+        widths.selectedSegment = max(0, min(2, defaults.object(forKey: "captureWidth") as? Int ?? 1))
+        shadows.target = self; shadows.action = #selector(selectStyle)
+        shadows.selectedSegment = max(0, min(3, defaults.object(forKey: "captureShadow") as? Int ?? 0))
+        bar.addArrangedSubview(widths)
+        bar.addArrangedSubview(shadows)
         @discardableResult func button(_ title: String, _ symbol: String, _ action: Selector, key: String = "",
                                        mods: NSEvent.ModifierFlags = [], accent: NSColor? = nil, iconOnly: Bool = false) -> NSButton {
             let b = NSButton(title: iconOnly ? "" : title, target: self, action: action)
             b.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)?
                 .withSymbolConfiguration(.init(pointSize: 14, weight: .semibold))
             b.imagePosition = iconOnly ? .imageOnly : .imageLeading
+            if iconOnly { b.widthAnchor.constraint(equalToConstant: 46).isActive = true }
             b.imageHugsTitle = true
             b.controlSize = .large
             b.bezelStyle = .push
@@ -216,8 +276,8 @@ private final class CaptureEditor: NSObject, NSWindowDelegate, NSTextFieldDelega
         input.controlSize = .large
         input.font = .systemFont(ofSize: 14)
         input.bezelStyle = .roundedBezel
-        input.widthAnchor.constraint(equalToConstant: 200).isActive = true
-        gap(4)
+        input.widthAnchor.constraint(equalToConstant: 170).isActive = true
+        gap(2)
         bar.addArrangedSubview(input)
         button("Undo", "arrow.uturn.backward", #selector(undo), key: "z", mods: .command, iconOnly: true)
         button("Reset", "trash", #selector(reset), iconOnly: true)
@@ -225,8 +285,8 @@ private final class CaptureEditor: NSObject, NSWindowDelegate, NSTextFieldDelega
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         bar.addArrangedSubview(spacer)
         button("Cancel", "xmark", #selector(cancel), key: "\u{1b}", iconOnly: true)
-        button("Copy Text", "text.viewfinder", #selector(copyText))
-        button("Save…", "square.and.arrow.down", #selector(savePNG), key: "s", mods: .command)
+        button("Copy Text", "text.viewfinder", #selector(copyText), iconOnly: true)
+        button("Save…", "square.and.arrow.down", #selector(savePNG), key: "s", mods: .command, iconOnly: true)
         button("Copy", "doc.on.doc.fill", #selector(copyPNG), key: "c", mods: .command, accent: .controlAccentColor)
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true; scroll.hasHorizontalScroller = true
@@ -264,6 +324,7 @@ private final class CaptureEditor: NSObject, NSWindowDelegate, NSTextFieldDelega
                 stack.bottomAnchor.constraint(equalTo: content.bottomAnchor)
             ])
         }
+        selectStyle()
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -271,6 +332,12 @@ private final class CaptureEditor: NSObject, NSWindowDelegate, NSTextFieldDelega
     func controlTextDidChange(_ obj: Notification) {
         canvas.text = input.stringValue
         if !input.stringValue.isEmpty { tools.selectedSegment = CaptureTool.text.rawValue; canvas.tool = .text }
+    }
+    @objc private func selectStyle() {
+        canvas.lineWidth = captureWidths[max(0, widths.selectedSegment)]
+        canvas.shadowLevel = max(0, shadows.selectedSegment)
+        defaults.set(widths.selectedSegment, forKey: "captureWidth")
+        defaults.set(shadows.selectedSegment, forKey: "captureShadow")
     }
     @objc private func selectTool() {
         canvas.tool = CaptureTool(rawValue: tools.selectedSegment) ?? .arrow
@@ -407,6 +474,19 @@ func testCapture() {
     precondition(cropped.pixelsWide == 61 && cropped.pixelsHigh == 31, "Crop size \(cropped.pixelsWide)x\(cropped.pixelsHigh)")
     precondition(canvas.exportImage.width == 61 && canvas.exportImage.height == 31, "Crop OCR image size")
     canvas.crop = nil; canvas.marks.removeAll()
+    // Width + shadow: a thick arrow with a strong shadow paints more red and adds gray shadow pixels.
+    func count(_ test: (NSColor) -> Bool) -> Int {
+        guard let data = canvas.png(), let out = NSBitmapImageRep(data: data) else { return 0 }
+        return (0..<90).reduce(0) { n, y in n + (0..<160).filter { x in out.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB).map(test) ?? false }.count }
+    }
+    let red = { (c: NSColor) in c.redComponent > c.greenComponent + 0.2 }
+    let gray = { (c: NSColor) in abs(c.redComponent - c.blueComponent) < 0.05 && c.redComponent < 0.9 }
+    canvas.marks = [CaptureMark(tool: .arrow, start: CGPoint(x: 20, y: 20), end: CGPoint(x: 130, y: 60), text: "", width: 3)]
+    let thinRed = count(red), plainGray = count(gray)
+    canvas.marks = [CaptureMark(tool: .arrow, start: CGPoint(x: 20, y: 20), end: CGPoint(x: 130, y: 60), text: "", width: 11, shadow: 3)]
+    precondition(count(red) > thinRed * 2, "Thick line not wider")
+    precondition(count(gray) > plainGray + 50, "Shadow not rendered")
+    canvas.marks.removeAll()
     let editor = CaptureEditor(image: rep.cgImage!)
     editor.window.close()
     let ocrRep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 640, pixelsHigh: 160,
@@ -423,5 +503,5 @@ func testCapture() {
     request.recognitionLevel = .accurate
     try! VNImageRequestHandler(cgImage: ocrRep.cgImage!).perform([request])
     precondition((request.results ?? []).contains { $0.topCandidates(1).first?.string.contains("NIRTAB") == true }, "OCR failed")
-    print("Capture self-check passed: rectangle, circle, arrow, text, reset, crop, OCR; 160×90 PNG")
+    print("Capture self-check passed: rectangle, circle, arrow, text, reset, crop, width, shadow, OCR; 160×90 PNG")
 }
