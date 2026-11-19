@@ -1471,7 +1471,7 @@ if CommandLine.arguments.contains("--test-extras") {
 if CommandLine.arguments.contains("--test-caffeinate") { _ = NSApplication.shared; testCaffeinate(); exit(0) }
 if CommandLine.arguments.contains("--test-coffee-break") { _ = NSApplication.shared; testCoffeeBreak(); exit(0) }
 if CommandLine.arguments.contains("--test-battery") { _ = NSApplication.shared; testBattery(); exit(0) }
-if CommandLine.arguments.contains("--test-capture") { _ = NSApplication.shared; testCapture(); exit(0) }
+if CommandLine.arguments.contains("--test-capture") { _ = NSApplication.shared; testCapture(); testCaptureSelection(); exit(0) }
 if CommandLine.arguments.contains("--test-styles") {
     _ = NSApplication.shared
     guard let sample = listWindows().first else { print("no windows to test"); exit(1) }

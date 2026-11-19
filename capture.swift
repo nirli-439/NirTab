@@ -395,6 +395,132 @@ private final class CaptureEditor: NSObject, NSWindowDelegate, NSTextFieldDelega
 }
 
 private var captureEditor: CaptureEditor?
+private var captureSelection: CaptureSelection?
+
+// Area selection over a frozen capture of the display: the screen dims a little, a crosshair shows the pointer's
+// x, y (points from the display's top-left), dragging shows the selection's width × height, and releasing opens
+// the editor with that area. A click or Return takes the whole display; Esc cancels.
+private final class SelectionWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+}
+private final class SelectionView: NSView {
+    var onDone: (CGRect?) -> Void = { _ in }  // nil = cancelled; .zero = whole display
+    private var pointer: CGPoint?
+    private var anchor: CGPoint?
+    private var selection: CGRect? { anchor.flatMap { a in pointer.map { p in
+        CGRect(x: min(a.x, p.x), y: min(a.y, p.y), width: abs(p.x - a.x), height: abs(p.y - a.y)) } } }
+    override var isFlipped: Bool { true }  // top-left origin, like screen coordinates people read
+    override var acceptsFirstResponder: Bool { true }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .crosshair) }
+    override func updateTrackingAreas() {
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseMoved, .activeAlways, .inVisibleRect, .cursorUpdate], owner: self))
+    }
+    override func cursorUpdate(with event: NSEvent) { NSCursor.crosshair.set() }
+    private func point(_ e: NSEvent) -> CGPoint {
+        let p = convert(e.locationInWindow, from: nil)
+        return CGPoint(x: min(max(p.x, 0), bounds.width).rounded(), y: min(max(p.y, 0), bounds.height).rounded())
+    }
+    override func mouseMoved(with event: NSEvent) { pointer = point(event); needsDisplay = true }
+    override func mouseDown(with event: NSEvent) { anchor = point(event); pointer = anchor; needsDisplay = true }
+    override func mouseDragged(with event: NSEvent) { pointer = point(event); needsDisplay = true }
+    override func mouseUp(with event: NSEvent) {
+        pointer = point(event)
+        guard let r = selection, r.width >= 4, r.height >= 4 else { onDone(.zero); return }
+        onDone(r)
+    }
+    override func keyDown(with event: NSEvent) {
+        switch event.keyCode {
+        case 53: onDone(nil)             // esc
+        case 36, 76: onDone(.zero)       // return / enter: whole display
+        default: super.keyDown(with: event)
+        }
+    }
+    override func draw(_ dirtyRect: NSRect) {
+        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+        // Light dim everywhere except the selection.
+        ctx.addRect(bounds)
+        if let r = selection { ctx.addRect(r) }
+        ctx.setFillColor(NSColor.black.withAlphaComponent(0.28).cgColor)
+        ctx.fillPath(using: .evenOdd)
+        guard let p = pointer else { return }
+        if let r = selection {
+            ctx.setShadow(offset: .zero, blur: 6, color: NSColor.black.withAlphaComponent(0.6).cgColor)
+            ctx.setStrokeColor(NSColor.white.cgColor)
+            ctx.setLineWidth(1.5)
+            ctx.stroke(r.insetBy(dx: -0.75, dy: -0.75))
+            ctx.setShadow(offset: .zero, blur: 0)
+            label("\(Int(r.width)) × \(Int(r.height))", near: CGPoint(x: r.maxX, y: r.maxY))
+        } else {
+            // Crosshair through the pointer.
+            ctx.setStrokeColor(NSColor.white.withAlphaComponent(0.55).cgColor)
+            ctx.setLineWidth(1)
+            ctx.setLineDash(phase: 0, lengths: [5, 4])
+            ctx.move(to: CGPoint(x: p.x + 0.5, y: 0)); ctx.addLine(to: CGPoint(x: p.x + 0.5, y: bounds.height))
+            ctx.move(to: CGPoint(x: 0, y: p.y + 0.5)); ctx.addLine(to: CGPoint(x: bounds.width, y: p.y + 0.5))
+            ctx.strokePath()
+            ctx.setLineDash(phase: 0, lengths: [])
+            label("x \(Int(p.x))   y \(Int(p.y))", near: p)
+        }
+    }
+    // Rounded dark pill next to a point, kept inside the screen.
+    private func label(_ text: String, near p: CGPoint) {
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .semibold), .foregroundColor: NSColor.white]
+        let size = (text as NSString).size(withAttributes: attrs)
+        var box = CGRect(x: p.x + 14, y: p.y + 14, width: size.width + 16, height: size.height + 8)
+        if box.maxX > bounds.maxX - 4 { box.origin.x = p.x - 14 - box.width }
+        if box.maxY > bounds.maxY - 4 { box.origin.y = p.y - 14 - box.height }
+        let shadow = NSShadow(); shadow.shadowBlurRadius = 6; shadow.shadowColor = .black.withAlphaComponent(0.5)
+        NSGraphicsContext.saveGraphicsState()
+        shadow.set()
+        NSColor.black.withAlphaComponent(0.78).setFill()
+        NSBezierPath(roundedRect: box, xRadius: box.height / 2, yRadius: box.height / 2).fill()
+        NSGraphicsContext.restoreGraphicsState()
+        (text as NSString).draw(at: CGPoint(x: box.minX + 8, y: box.minY + 4), withAttributes: attrs)
+    }
+}
+private final class CaptureSelection: NSObject {
+    let window: SelectionWindow
+    init(screen: NSScreen, image: CGImage) {
+        window = SelectionWindow(contentRect: screen.frame, styleMask: .borderless, backing: .buffered, defer: false)
+        super.init()
+        window.level = .screenSaver
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.hasShadow = false
+        window.ignoresMouseEvents = false
+        window.acceptsMouseMovedEvents = true
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        window.isReleasedWhenClosed = false
+        // The frozen capture underneath, so what you select is exactly what you get.
+        let frozen = NSImageView(frame: CGRect(origin: .zero, size: screen.frame.size))
+        frozen.image = NSImage(cgImage: image, size: screen.frame.size)
+        frozen.imageScaling = .scaleAxesIndependently
+        let view = SelectionView(frame: frozen.frame)
+        frozen.addSubview(view)
+        window.contentView = frozen
+        let scale = CGFloat(image.width) / screen.frame.width
+        view.onDone = { [weak self] rect in
+            self?.window.orderOut(nil)
+            captureSelection = nil
+            guard let rect else { return }
+            let pixels = CGRect(x: rect.minX * scale, y: rect.minY * scale, width: rect.width * scale, height: rect.height * scale).integral
+            let chosen = rect == .zero ? image : (image.cropping(to: pixels) ?? image)
+            captureEditor = CaptureEditor(image: chosen)
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        window.makeFirstResponder(view)
+        if let p = Optional(window.mouseLocationOutsideOfEventStream) {
+            view.mouseMoved(with: NSEvent.mouseEvent(with: .mouseMoved, location: p, modifierFlags: [], timestamp: 0,
+                                                     windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+                                                     clickCount: 0, pressure: 0)!)
+        }
+    }
+}
 private func captureError(_ message: String, window: NSWindow? = nil) {
     let alert = NSAlert()
     alert.messageText = "Capture error"
@@ -404,6 +530,7 @@ private func captureError(_ message: String, window: NSWindow? = nil) {
 
 func openCapture() {
     guard captureEditor == nil else { captureEditor?.window.makeKeyAndOrderFront(nil); return }
+    guard captureSelection == nil else { return }
     guard CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess() else {
         captureError("Screen Recording permission is required. Enable NirTab in System Settings → Privacy & Security → Screen & System Audio Recording, then restart NirTab.")
         return
@@ -419,12 +546,15 @@ func openCapture() {
                 captureError("The selected display is unavailable."); return
             }
             let config = SCStreamConfiguration()
-            config.width = CGDisplayPixelsWide(displayID)
-            config.height = CGDisplayPixelsHigh(displayID)
+            // Full Retina resolution (CGDisplayPixelsWide is in points on scaled displays).
+            let backing = screen?.backingScaleFactor ?? 1
+            config.width = Int(CGFloat(CGDisplayPixelsWide(displayID)) * backing)
+            config.height = Int(CGFloat(CGDisplayPixelsHigh(displayID)) * backing)
             config.showsCursor = false
             let image = try await SCScreenshotManager.captureImage(
                 contentFilter: SCContentFilter(display: display, excludingWindows: []), configuration: config)
-            captureEditor = CaptureEditor(image: image)
+            guard let screen else { captureEditor = CaptureEditor(image: image); return }
+            captureSelection = CaptureSelection(screen: screen, image: image)
         } catch { captureError("Could not capture the display: \(error.localizedDescription)") }
     }
 }
@@ -504,4 +634,23 @@ func testCapture() {
     try! VNImageRequestHandler(cgImage: ocrRep.cgImage!).perform([request])
     precondition((request.results ?? []).contains { $0.topCandidates(1).first?.string.contains("NIRTAB") == true }, "OCR failed")
     print("Capture self-check passed: rectangle, circle, arrow, text, reset, crop, width, shadow, OCR; 160×90 PNG")
+}
+// Selection overlay: a drag reports the rectangle in top-left points; a click means the whole display.
+func testCaptureSelection() {
+    let v = SelectionView(frame: CGRect(x: 0, y: 0, width: 1200, height: 750))
+    let w = NSWindow(contentRect: v.frame, styleMask: .borderless, backing: .buffered, defer: false)
+    w.contentView = v
+    func ev(_ t: NSEvent.EventType, _ x: CGFloat, _ y: CGFloat) -> NSEvent {
+        NSEvent.mouseEvent(with: t, location: CGPoint(x: x, y: y), modifierFlags: [], timestamp: 0, windowNumber: w.windowNumber,
+                           context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+    }
+    var result: CGRect?
+    v.onDone = { result = $0 }
+    v.mouseMoved(with: ev(.mouseMoved, 400, 450))
+    v.mouseDown(with: ev(.leftMouseDown, 250, 550)); v.mouseDragged(with: ev(.leftMouseDragged, 800, 300))
+    v.mouseUp(with: ev(.leftMouseUp, 800, 300))
+    precondition(result == CGRect(x: 250, y: 200, width: 550, height: 250), "selection rect \(String(describing: result))")
+    v.mouseDown(with: ev(.leftMouseDown, 300, 300)); v.mouseUp(with: ev(.leftMouseUp, 301, 300))
+    precondition(result == .zero, "click should select the whole display")
+    print("Capture selection PASS")
 }
