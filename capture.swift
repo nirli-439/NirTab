@@ -10,21 +10,67 @@ private struct CaptureMark {
     let text: String
     var width: CGFloat = 6   // stroke width in image pixels
     var shadow = 0           // 0 off, 1 soft, 2 medium, 3 strong
+    var color: NSColor = .systemRed
 }
+// Markup colors, in the order of Apple's Markup palette.
+let captureColors: [(String, NSColor)] = [("Red", .systemRed), ("Orange", .systemOrange), ("Yellow", .systemYellow),
+                                          ("Green", .systemGreen), ("Blue", .systemBlue), ("Purple", .systemPurple),
+                                          ("Black", .black), ("White", .white)]
 let captureWidths: [CGFloat] = [3, 6, 11]
 // Shadow (offset, blur, opacity) per level, in image pixels.
 let captureShadows: [(CGFloat, CGFloat, CGFloat)] = [(0, 0, 0), (2, 5, 0.45), (5, 12, 0.6), (9, 22, 0.75)]
 
 // Coordinates are image pixels (not preview points), so export never depends on window size.
-private final class CaptureCanvas: NSView {
+private final class CaptureCanvas: NSView, NSTextFieldDelegate {
     let image: CGImage
-    var tool: CaptureTool = .arrow
-    var text = ""
+    var tool: CaptureTool = .arrow { didSet { commitText() } }
     var lineWidth: CGFloat = 6
     var shadowLevel = 0
-    var marks: [CaptureMark] = [] { didSet { needsDisplay = true } }
+    var color: NSColor = .systemRed
+    var onChange: () -> Void = {}
+    var marks: [CaptureMark] = [] { didSet { needsDisplay = true; onChange() } }
     // Crop is non-destructive: marks stay in full-image pixels; only export and OCR use the cropped area.
-    var crop: CGRect? { didSet { needsDisplay = true } }
+    var crop: CGRect? { didSet { needsDisplay = true; onChange() } }
+    // Text is typed in place, like Markup: a borderless field at the click point, committed on Return or the next click.
+    private var editor: NSTextField?
+    private var editorPixel: CGPoint = .zero
+    private var scale: CGFloat { bounds.width / CGFloat(image.width) }
+    private func fontSize(_ width: CGFloat) -> CGFloat { 18 + width * 2 }
+    func commitText() {
+        guard let field = editor else { return }
+        editor = nil
+        let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        field.removeFromSuperview()
+        if !text.isEmpty {
+            marks.append(CaptureMark(tool: .text, start: editorPixel, end: editorPixel, text: text, width: lineWidth, shadow: shadowLevel, color: color))
+        }
+    }
+    private func beginText(at viewPoint: CGPoint) {
+        let field = NSTextField(string: "")
+        field.isBordered = false; field.drawsBackground = false; field.focusRingType = .none
+        field.font = .boldSystemFont(ofSize: fontSize(lineWidth) * scale)
+        field.textColor = color
+        field.placeholderString = "Text"
+        field.delegate = self
+        field.target = self; field.action = #selector(endText)
+        let height = ceil(field.font!.ascender - field.font!.descender + 4)
+        field.frame = CGRect(x: viewPoint.x - 2, y: viewPoint.y - height / 2, width: max(160, bounds.width - viewPoint.x), height: height)
+        // Text draws from its bottom-left in image pixels; keep the field's baseline where the mark will land.
+        editorPixel = pixelPoint(CGPoint(x: viewPoint.x, y: field.frame.minY + 2))
+        addSubview(field)
+        window?.makeFirstResponder(field)
+        editor = field
+    }
+    @objc private func endText() { commitText(); window?.makeFirstResponder(self) }
+    var onToolKey: (CaptureTool) -> Void = { _ in }
+    override var acceptsFirstResponder: Bool { true }
+    override func keyDown(with event: NSEvent) {
+        let tools: [String: CaptureTool] = ["a": .arrow, "r": .rectangle, "o": .circle, "t": .text, "c": .crop]
+        if event.modifierFlags.intersection([.command, .control, .option]).isEmpty,
+           let t = event.charactersIgnoringModifiers.flatMap({ tools[$0.lowercased()] }) { onToolKey(t) }
+        else { super.keyDown(with: event) }
+    }
+    func controlTextDidEndEditing(_ obj: Notification) { commitText() }
     var cropAfterMarks = 0  // marks.count when the crop was set, so Undo removes the newest change first
     var exportRect: CGRect {
         let full = CGRect(x: 0, y: 0, width: image.width, height: image.height)
@@ -54,13 +100,14 @@ private final class CaptureCanvas: NSView {
     override func mouseDown(with event: NSEvent) {
         let p = pixelPoint(convert(event.locationInWindow, from: nil))
         if tool == .text {
-            if !text.isEmpty { marks.append(CaptureMark(tool: .text, start: p, end: p, text: text, width: lineWidth, shadow: shadowLevel)) }
-        } else { dragStart = p }
+            if editor != nil { commitText(); window?.makeFirstResponder(self) }
+            else { beginText(at: convert(event.locationInWindow, from: nil)) }
+        } else { commitText(); dragStart = p }
     }
     override func mouseDragged(with event: NSEvent) {
         guard let start = dragStart else { return }
         provisional = CaptureMark(tool: tool, start: start, end: pixelPoint(convert(event.locationInWindow, from: nil)), text: "",
-                                  width: lineWidth, shadow: shadowLevel)
+                                  width: lineWidth, shadow: shadowLevel, color: color)
         needsDisplay = true
     }
     override func mouseUp(with event: NSEvent) {
@@ -70,7 +117,7 @@ private final class CaptureCanvas: NSView {
             let r = CGRect(x: min(start.x, end.x), y: min(start.y, end.y), width: abs(end.x - start.x), height: abs(end.y - start.y))
             if r.width >= 8 && r.height >= 8 { crop = r; cropAfterMarks = marks.count }
         } else if hypot(end.x - start.x, end.y - start.y) > 2 {
-            marks.append(CaptureMark(tool: tool, start: start, end: end, text: "", width: lineWidth, shadow: shadowLevel))
+            marks.append(CaptureMark(tool: tool, start: start, end: end, text: "", width: lineWidth, shadow: shadowLevel, color: color))
         }
         dragStart = nil; provisional = nil; needsDisplay = true
     }
@@ -101,7 +148,7 @@ private final class CaptureCanvas: NSView {
         context.scaleBy(x: size.width / CGFloat(image.width), y: size.height / CGFloat(image.height))
         for mark in marks + (provisional.map { [$0] } ?? []) where mark.tool != .crop {
             context.saveGState()
-            context.setStrokeColor(NSColor.systemRed.cgColor)
+            context.setStrokeColor(mark.color.cgColor)
             context.setLineWidth(mark.width)
             context.setLineCap(.round)
             context.setLineJoin(.round)
@@ -132,7 +179,7 @@ private final class CaptureCanvas: NSView {
             case .text:
                 // NSString drawing uses the current AppKit graphics context, including the pixel transform.
                 (mark.text as NSString).draw(at: mark.start, withAttributes: [
-                    .font: NSFont.boldSystemFont(ofSize: 18 + mark.width * 2), .foregroundColor: NSColor.systemRed
+                    .font: NSFont.boldSystemFont(ofSize: fontSize(mark.width)), .foregroundColor: mark.color
                 ])
             }
             context.restoreGState()
@@ -155,18 +202,6 @@ private final class CaptureCanvas: NSView {
     }
 }
 
-// Large, icon-only segmented control; each segment's name is its tooltip.
-private func iconSegments(_ items: [(NSImage?, String)], width: CGFloat) -> NSSegmentedControl {
-    let c = NSSegmentedControl(images: items.map { $0.0 ?? NSImage() }, trackingMode: .selectOne, target: nil, action: nil)
-    c.controlSize = .large
-    c.segmentStyle = .capsule
-    for (i, item) in items.enumerated() {
-        c.setWidth(width, forSegment: i)
-        c.setToolTip(item.1, forSegment: i)
-        c.setImageScaling(.scaleNone, forSegment: i)
-    }
-    return c
-}
 // A diagonal stroke of the given thickness, for the width picker.
 private func lineIcon(_ thickness: CGFloat) -> NSImage {
     let img = NSImage(size: CGSize(width: 20, height: 20), flipped: false) { r in
@@ -207,157 +242,217 @@ private final class CenteringView: NSView {
     }
 }
 
-private final class CaptureEditor: NSObject, NSWindowDelegate, NSTextFieldDelegate {
+// A filled color swatch, for the color menu and toolbar item.
+private func colorDot(_ color: NSColor, size: CGFloat = 16) -> NSImage {
+    NSImage(size: CGSize(width: size, height: size), flipped: false) { r in
+        let dot = NSBezierPath(ovalIn: r.insetBy(dx: 1, dy: 1))
+        color.setFill(); dot.fill()
+        NSColor.separatorColor.setStroke(); dot.lineWidth = 1; dot.stroke()
+        return true
+    }
+}
+
+private final class EditorWindow: NSWindow {
+    var onCommand: (String) -> Bool = { _ in false }
+    override func cancelOperation(_ sender: Any?) { close() }  // Esc closes, like Markup's Cancel
+    // NirTab has no main menu, so ⌘Z / ⌘C / ⌘S are handled here (unless a text field is being edited).
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command, !(firstResponder is NSText),
+           let key = event.charactersIgnoringModifiers?.lowercased(), onCommand(key) { return true }
+        return super.performKeyEquivalent(with: event)
+    }
+}
+
+private func zip3<A, B, C>(_ a: [A], _ b: [B], _ c: [C]) -> [(A, B, C)] { zip(a, zip(b, c)).map { ($0, $1.0, $1.1) } }
+
+private extension NSToolbarItem.Identifier {
+    static let tools = Self("capture.tools"), style = Self("capture.style"), shadow = Self("capture.shadow"),
+               color = Self("capture.color"), undo = Self("capture.undo"), clear = Self("capture.clear"),
+               ocr = Self("capture.ocr"), save = Self("capture.save"), copy = Self("capture.copy")
+}
+
+// Apple Markup-style editor: native unified toolbar (tools, shape style, shadow, color, undo), title + size subtitle,
+// system light/dark, image centered on the under-page background, text typed in place.
+private final class CaptureEditor: NSObject, NSWindowDelegate, NSToolbarDelegate {
     let window: NSWindow
     let canvas: CaptureCanvas
-    private let tools: NSSegmentedControl
-    private let input = NSTextField(string: "")
-    private let widths: NSSegmentedControl
-    private let shadows: NSSegmentedControl
+    private var toolGroup: NSToolbarItemGroup?
+    private var styleItem: NSMenuToolbarItem?
+    private var shadowItem: NSMenuToolbarItem?
+    private var colorItem: NSMenuToolbarItem?
+    private var widthIndex = max(0, min(2, defaults.object(forKey: "captureWidth") as? Int ?? 1))
+    private var shadowIndex = max(0, min(3, defaults.object(forKey: "captureShadow") as? Int ?? 0))
+    private var colorIndex = max(0, min(captureColors.count - 1, defaults.object(forKey: "captureColor") as? Int ?? 0))
+
     init(image: CGImage) {
         let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main
         let available = screen?.visibleFrame.size ?? CGSize(width: 1000, height: 700)
-        let width = min(1300, max(1180, available.width * 0.85)), height = min(840, available.height * 0.88)
-        let scale = min((width - 60) / CGFloat(image.width), (height - 150) / CGFloat(image.height), 1)
-        canvas = CaptureCanvas(image: image, size: CGSize(width: CGFloat(image.width) * scale,
-                                                          height: CGFloat(image.height) * scale))
-        // Icon-only segments; names are in tooltips.
-        let toolInfo = [("Arrow", "arrow.up.right"), ("Box", "rectangle"), ("Circle", "circle"), ("Text", "textformat"), ("Crop", "crop")]
-        tools = iconSegments(toolInfo.map { (NSImage(systemSymbolName: $0.1, accessibilityDescription: $0.0)?
-            .withSymbolConfiguration(.init(pointSize: 17, weight: .semibold)), $0.0) }, width: 46)
-        widths = iconSegments(captureWidths.enumerated().map { i, _ in
-            (lineIcon(CGFloat([1.5, 3, 5.5][i])), ["Thin", "Medium", "Thick"][i] + " line") }, width: 40)
-        shadows = iconSegments((0...3).map { (shadowIcon($0), ["No shadow", "Soft shadow", "Medium shadow", "Strong shadow"][$0]) }, width: 40)
-        window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: width, height: height),
-                          styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
+        let width = min(1400, max(900, available.width * 0.8)), height = min(900, available.height * 0.85)
+        let scale = min((width - 64) / CGFloat(image.width), (height - 116) / CGFloat(image.height), 1)
+        canvas = CaptureCanvas(image: image, size: CGSize(width: CGFloat(image.width) * scale, height: CGFloat(image.height) * scale))
+        window = EditorWindow(contentRect: CGRect(x: 0, y: 0, width: width, height: height),
+                              styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView], backing: .buffered, defer: false)
         super.init()
         window.title = "Capture"
         window.isReleasedWhenClosed = false  // The editor owns the window until windowWillClose clears it.
         window.delegate = self
-        window.minSize = CGSize(width: 1180, height: 480)
-        window.titlebarAppearsTransparent = true
-        window.appearance = NSAppearance(named: .darkAqua)
-        window.backgroundColor = NSColor(calibratedWhite: 0.11, alpha: 1)
-        let stack = NSStackView()
-        stack.orientation = .vertical; stack.spacing = 0
-        let bar = NSStackView()
-        bar.orientation = .horizontal; bar.spacing = 8
-        bar.spacing = 10
-        bar.edgeInsets = NSEdgeInsets(top: 12, left: 16, bottom: 12, right: 16)
-        tools.target = self; tools.action = #selector(selectTool); tools.selectedSegment = 0
-        bar.addArrangedSubview(tools)
-        // Width and shadow apply to new marks and are remembered between captures.
-        widths.target = self; widths.action = #selector(selectStyle)
-        widths.selectedSegment = max(0, min(2, defaults.object(forKey: "captureWidth") as? Int ?? 1))
-        shadows.target = self; shadows.action = #selector(selectStyle)
-        shadows.selectedSegment = max(0, min(3, defaults.object(forKey: "captureShadow") as? Int ?? 0))
-        bar.addArrangedSubview(widths)
-        bar.addArrangedSubview(shadows)
-        @discardableResult func button(_ title: String, _ symbol: String, _ action: Selector, key: String = "",
-                                       mods: NSEvent.ModifierFlags = [], accent: NSColor? = nil, iconOnly: Bool = false) -> NSButton {
-            let b = NSButton(title: iconOnly ? "" : title, target: self, action: action)
-            b.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)?
-                .withSymbolConfiguration(.init(pointSize: 14, weight: .semibold))
-            b.imagePosition = iconOnly ? .imageOnly : .imageLeading
-            if iconOnly { b.widthAnchor.constraint(equalToConstant: 46).isActive = true }
-            b.imageHugsTitle = true
-            b.controlSize = .large
-            b.bezelStyle = .push
-            b.font = .systemFont(ofSize: 13, weight: .semibold)
-            b.toolTip = key.isEmpty ? title : "\(title) (\(mods.contains(.command) ? "⌘" : "")\(key == "\u{1b}" ? "esc" : key.uppercased()))"
-            if let accent { b.bezelColor = accent; b.contentTintColor = .white }
-            b.keyEquivalent = key; b.keyEquivalentModifierMask = mods
-            bar.addArrangedSubview(b)
-            return b
-        }
-        func gap(_ w: CGFloat) { let v = NSView(); v.widthAnchor.constraint(equalToConstant: w).isActive = true; bar.addArrangedSubview(v) }
-        input.placeholderString = "Type text, then click the image"
-        input.delegate = self
-        input.controlSize = .large
-        input.font = .systemFont(ofSize: 14)
-        input.bezelStyle = .roundedBezel
-        input.widthAnchor.constraint(equalToConstant: 170).isActive = true
-        gap(2)
-        bar.addArrangedSubview(input)
-        button("Undo", "arrow.uturn.backward", #selector(undo), key: "z", mods: .command, iconOnly: true)
-        button("Reset", "trash", #selector(reset), iconOnly: true)
-        let spacer = NSView()
-        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        bar.addArrangedSubview(spacer)
-        button("Cancel", "xmark", #selector(cancel), key: "\u{1b}", iconOnly: true)
-        button("Copy Text", "text.viewfinder", #selector(copyText), iconOnly: true)
-        button("Save…", "square.and.arrow.down", #selector(savePNG), key: "s", mods: .command, iconOnly: true)
-        button("Copy", "doc.on.doc.fill", #selector(copyPNG), key: "c", mods: .command, accent: .controlAccentColor)
+        window.minSize = CGSize(width: 820, height: 420)
+        let toolbar = NSToolbar(identifier: "NirTabCapture")
+        toolbar.delegate = self
+        toolbar.displayMode = .iconOnly
+        toolbar.allowsUserCustomization = false
+        window.toolbar = toolbar
+        window.toolbarStyle = .unified
+
         let scroll = NSScrollView()
-        scroll.hasVerticalScroller = true; scroll.hasHorizontalScroller = true
-        scroll.drawsBackground = false
-        scroll.autohidesScrollers = true
+        scroll.hasVerticalScroller = true; scroll.hasHorizontalScroller = true; scroll.autohidesScrollers = true
+        scroll.backgroundColor = .underPageBackgroundColor; scroll.drawsBackground = true
         canvas.wantsLayer = true
-        canvas.layer?.cornerRadius = 8
-        canvas.layer?.masksToBounds = true
-        canvas.shadow = NSShadow()
-        // Center the image with a margin on a dark backdrop.
+        canvas.shadow = {
+            let s = NSShadow(); s.shadowBlurRadius = 12; s.shadowOffset = CGSize(width: 0, height: -3)
+            s.shadowColor = NSColor.black.withAlphaComponent(0.3); return s
+        }()
         let holder = CenteringView()
         holder.addSubview(canvas)
         holder.frame.size = CGSize(width: canvas.frame.width + 48, height: canvas.frame.height + 48)
         scroll.documentView = holder
-        let frost = NSVisualEffectView()
-        frost.material = .titlebar; frost.blendingMode = .withinWindow; frost.state = .active
-        frost.addSubview(bar)
-        bar.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            bar.leadingAnchor.constraint(equalTo: frost.leadingAnchor), bar.trailingAnchor.constraint(equalTo: frost.trailingAnchor),
-            bar.topAnchor.constraint(equalTo: frost.topAnchor, constant: 22), bar.bottomAnchor.constraint(equalTo: frost.bottomAnchor)
-        ])
-        stack.addArrangedSubview(frost); stack.addArrangedSubview(scroll)
-        stack.setHuggingPriority(.required, for: .vertical)
-        frost.setContentHuggingPriority(.required, for: .vertical)
-        bar.setContentHuggingPriority(.required, for: .vertical)
-        frost.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        window.contentView?.addSubview(stack)
-        if let content = window.contentView {
-            NSLayoutConstraint.activate([
-                stack.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-                stack.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-                stack.topAnchor.constraint(equalTo: content.topAnchor),
-                stack.bottomAnchor.constraint(equalTo: content.bottomAnchor)
-            ])
+        window.contentView = scroll
+        canvas.lineWidth = captureWidths[widthIndex]
+        canvas.shadowLevel = shadowIndex
+        canvas.color = captureColors[colorIndex].1
+        canvas.onChange = { [weak self] in self?.updateSubtitle() }
+        (window as? EditorWindow)?.onCommand = { [weak self] key in
+            guard let self else { return false }
+            switch key {
+            case "z": self.undo()
+            case "c": self.copyPNG()
+            case "s": self.savePNG()
+            case "w": self.window.close()
+            default: return false
+            }
+            return true
         }
-        selectStyle()
+        canvas.onToolKey = { [weak self] t in self?.canvas.tool = t; self?.toolGroup?.selectedIndex = t.rawValue }
+        updateSubtitle()
         window.center()
         window.makeKeyAndOrderFront(nil)
+        window.makeFirstResponder(canvas)
         NSApp.activate(ignoringOtherApps: true)
     }
-    func controlTextDidChange(_ obj: Notification) {
-        canvas.text = input.stringValue
-        if !input.stringValue.isEmpty { tools.selectedSegment = CaptureTool.text.rawValue; canvas.tool = .text }
+
+    private func updateSubtitle() {
+        let r = canvas.exportRect
+        window.subtitle = "\(Int(r.width)) × \(Int(r.height))" + (canvas.crop != nil ? " · cropped" : "")
     }
-    @objc private func selectStyle() {
-        canvas.lineWidth = captureWidths[max(0, widths.selectedSegment)]
-        canvas.shadowLevel = max(0, shadows.selectedSegment)
-        defaults.set(widths.selectedSegment, forKey: "captureWidth")
-        defaults.set(shadows.selectedSegment, forKey: "captureShadow")
+
+    // MARK: Toolbar
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [.tools, .style, .shadow, .color, .space, .undo, .clear, .flexibleSpace, .ocr, .save, .copy]
     }
-    @objc private func selectTool() {
-        canvas.tool = CaptureTool(rawValue: tools.selectedSegment) ?? .arrow
-        if canvas.tool == .text { canvas.text = input.stringValue; window.makeFirstResponder(input) }
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { toolbarDefaultItemIdentifiers(toolbar) }
+    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        func symbol(_ name: String, _ label: String) -> NSImage { NSImage(systemSymbolName: name, accessibilityDescription: label)! }
+        func button(_ label: String, _ name: String, _ action: Selector) -> NSToolbarItem {
+            let item = NSToolbarItem(itemIdentifier: id)
+            item.label = label; item.toolTip = label; item.image = symbol(name, label)
+            item.target = self; item.action = action; item.isBordered = true
+            return item
+        }
+        switch id {
+        case .tools:
+            let tools = [("Arrow", "arrow.up.right"), ("Rectangle", "rectangle"), ("Oval", "circle"), ("Text", "textformat"), ("Crop", "crop")]
+            let group = NSToolbarItemGroup(itemIdentifier: id, images: tools.map { symbol($0.1, $0.0) }, selectionMode: .selectOne,
+                                           labels: tools.map(\.0), target: self, action: #selector(selectTool(_:)))
+            group.label = "Tools"
+            for (sub, t, key) in zip3(group.subitems, tools, ["A", "R", "O", "T", "C"]) { sub.toolTip = "\(t.0) (\(key))" }
+            group.selectedIndex = canvas.tool.rawValue
+            toolGroup = group
+            return group
+        case .style:
+            let item = NSMenuToolbarItem(itemIdentifier: id)
+            item.label = "Shape Style"; item.toolTip = "Line width"
+            styleItem = item; refreshMenus()
+            return item
+        case .shadow:
+            let item = NSMenuToolbarItem(itemIdentifier: id)
+            item.label = "Shadow"; item.toolTip = "Shadow"
+            shadowItem = item; refreshMenus()
+            return item
+        case .color:
+            let item = NSMenuToolbarItem(itemIdentifier: id)
+            item.label = "Color"; item.toolTip = "Color"
+            colorItem = item; refreshMenus()
+            return item
+        case .undo: return button("Undo", "arrow.uturn.backward", #selector(undo))
+        case .clear: return button("Clear All", "eraser", #selector(reset))
+        case .ocr: return button("Copy Text", "text.viewfinder", #selector(copyText))
+        case .save: return button("Save…", "square.and.arrow.down", #selector(savePNG))
+        case .copy:
+            let b = NSButton(title: "Copy", target: self, action: #selector(copyPNG))
+            b.bezelStyle = .push; b.controlSize = .large
+            b.bezelColor = .controlAccentColor
+            let item = NSToolbarItem(itemIdentifier: id)
+            item.view = b; item.label = "Copy"; item.toolTip = "Copy image (⌘C)"
+            return item
+        default: return nil
+        }
     }
-    @objc private func undo() {
+    private func refreshMenus() {
+        func menu(_ entries: [(String, NSImage, Bool)], _ action: Selector) -> NSMenu {
+            let m = NSMenu()
+            for (i, e) in entries.enumerated() {
+                let it = NSMenuItem(title: e.0, action: action, keyEquivalent: "")
+                it.image = e.1; it.tag = i; it.target = self; it.state = e.2 ? .on : .off
+                m.addItem(it)
+            }
+            return m
+        }
+        styleItem?.image = lineIcon(CGFloat([1.5, 3, 5.5][widthIndex]))
+        styleItem?.menu = menu((0..<3).map { (["Thin", "Medium", "Thick"][$0], lineIcon(CGFloat([1.5, 3, 5.5][$0])), $0 == widthIndex) },
+                               #selector(chooseWidth(_:)))
+        shadowItem?.image = shadowIcon(shadowIndex)
+        shadowItem?.menu = menu((0...3).map { (["No Shadow", "Soft", "Medium", "Strong"][$0], shadowIcon($0), $0 == shadowIndex) },
+                                #selector(chooseShadow(_:)))
+        colorItem?.image = colorDot(captureColors[colorIndex].1, size: 18)
+        colorItem?.menu = menu(captureColors.enumerated().map { ($0.element.0, colorDot($0.element.1), $0.offset == colorIndex) },
+                               #selector(chooseColor(_:)))
+    }
+
+    // MARK: Actions
+    @objc private func selectTool(_ sender: NSToolbarItemGroup) {
+        canvas.tool = CaptureTool(rawValue: toolGroup?.selectedIndex ?? 0) ?? .arrow
+        window.makeFirstResponder(canvas)
+    }
+    @objc private func chooseWidth(_ sender: NSMenuItem) {
+        widthIndex = sender.tag; canvas.lineWidth = captureWidths[widthIndex]
+        defaults.set(widthIndex, forKey: "captureWidth"); refreshMenus()
+    }
+    @objc private func chooseShadow(_ sender: NSMenuItem) {
+        shadowIndex = sender.tag; canvas.shadowLevel = shadowIndex
+        defaults.set(shadowIndex, forKey: "captureShadow"); refreshMenus()
+    }
+    @objc private func chooseColor(_ sender: NSMenuItem) {
+        colorIndex = sender.tag; canvas.color = captureColors[colorIndex].1
+        defaults.set(colorIndex, forKey: "captureColor"); refreshMenus()
+    }
+    @objc func undo() {
+        canvas.commitText()
         if canvas.crop != nil && canvas.marks.count <= canvas.cropAfterMarks { canvas.crop = nil }
         else if !canvas.marks.isEmpty { canvas.marks.removeLast() }
     }
-    @objc private func reset() { canvas.marks.removeAll(); canvas.crop = nil }
-    @objc private func cancel() { window.close() }
+    @objc private func reset() { canvas.commitText(); canvas.marks.removeAll(); canvas.crop = nil }
     @objc private func copyPNG() {
+        canvas.commitText()
         guard let data = canvas.png() else { captureError("Could not encode the PNG.", window: window); return }
         let pb = NSPasteboard.general
         pb.clearContents()
         guard pb.setData(data, forType: .png) else { captureError("Could not copy the PNG.", window: window); return }
         if defaults.bool(forKey: "clipboardEnabled") { clipboard.poll() }
         window.close()
+        showToast("Image copied", symbol: "photo", color: .blue)
     }
     @objc private func copyText() {
+        canvas.commitText()
         let image = canvas.exportImage
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let request = VNRecognizeTextRequest()
@@ -373,6 +468,7 @@ private final class CaptureEditor: NSObject, NSWindowDelegate, NSTextFieldDelega
                     if board.setString(text, forType: .string) {
                         if defaults.bool(forKey: "clipboardEnabled") { clipboard.poll() }
                         self.window.close()
+                        showToast("Text copied", symbol: "text.viewfinder", color: .blue)
                     } else { captureError("Could not copy recognized text.", window: self.window) }
                 }
             } catch {
@@ -381,6 +477,7 @@ private final class CaptureEditor: NSObject, NSWindowDelegate, NSTextFieldDelega
         }
     }
     @objc private func savePNG() {
+        canvas.commitText()
         guard let data = canvas.png() else { captureError("Could not encode the PNG.", window: window); return }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.png]
@@ -618,6 +715,18 @@ func testCapture() {
     precondition(count(gray) > plainGray + 50, "Shadow not rendered")
     canvas.marks.removeAll()
     let editor = CaptureEditor(image: rep.cgImage!)
+    // In-place text: click with the Text tool, type, commit → one text mark in the chosen color.
+    editor.canvas.tool = .text
+    editor.canvas.color = .systemBlue
+    let click = NSEvent.mouseEvent(with: .leftMouseDown, location: editor.canvas.convert(CGPoint(x: 20, y: 20), to: nil), modifierFlags: [],
+                                   timestamp: 0, windowNumber: editor.window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+    editor.canvas.mouseDown(with: click)
+    guard let field = editor.canvas.subviews.compactMap({ $0 as? NSTextField }).first else { preconditionFailure("Text field not shown") }
+    field.stringValue = "Hello"
+    editor.canvas.commitText()
+    precondition(editor.canvas.marks.count == 1 && editor.canvas.marks[0].text == "Hello" && editor.canvas.marks[0].color == .systemBlue,
+                 "In-place text not committed")
+    precondition(editor.window.subtitle == "160 × 90", "subtitle \(editor.window.subtitle)")
     editor.window.close()
     let ocrRep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 640, pixelsHigh: 160,
                                   bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
@@ -653,4 +762,48 @@ func testCaptureSelection() {
     v.mouseDown(with: ev(.leftMouseDown, 300, 300)); v.mouseUp(with: ev(.leftMouseUp, 301, 300))
     precondition(result == .zero, "click should select the whole display")
     print("Capture selection PASS")
+}
+
+// Debug (--snapshot-ui): the editor with sample marks and the selection overlay, on a made-up image (no screen capture).
+func snapshotCapture(_ dir: String) {
+    let w = 1600, h = 1000
+    let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                               isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+    NSGradient(colors: [.systemTeal, .systemIndigo])!.draw(in: NSRect(x: 0, y: 0, width: w, height: h), angle: -35)
+    NSColor.white.withAlphaComponent(0.9).setFill()
+    NSBezierPath(roundedRect: NSRect(x: 200, y: 200, width: 1200, height: 600), xRadius: 24, yRadius: 24).fill()
+    ("Sample window" as NSString).draw(at: CGPoint(x: 260, y: 700), withAttributes: [.font: NSFont.boldSystemFont(ofSize: 56), .foregroundColor: NSColor.darkGray])
+    NSGraphicsContext.restoreGraphicsState()
+    let editor = CaptureEditor(image: rep.cgImage!)
+    editor.canvas.marks = [CaptureMark(tool: .arrow, start: CGPoint(x: 300, y: 300), end: CGPoint(x: 700, y: 600), text: "", width: 6, shadow: 2),
+                           CaptureMark(tool: .rectangle, start: CGPoint(x: 900, y: 300), end: CGPoint(x: 1300, y: 560), text: "", width: 6, shadow: 2),
+                           CaptureMark(tool: .text, start: CGPoint(x: 900, y: 600), end: .zero, text: "Look here", width: 6, shadow: 2, color: .systemBlue)]
+    func shot(_ win: NSWindow, _ name: String) {
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        guard let v = win.contentView?.superview ?? win.contentView, let r = v.bitmapImageRepForCachingDisplay(in: v.bounds) else { return }
+        v.cacheDisplay(in: v.bounds, to: r)
+        try? r.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "\(dir)/\(name).png"))
+    }
+    for (mode, look) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+        editor.window.appearance = NSAppearance(named: look)
+        shot(editor.window, "capture-editor-\(mode)")
+    }
+    editor.window.close()
+    let sel = SelectionView(frame: CGRect(x: 0, y: 0, width: 900, height: 560))
+    let frozen = NSImageView(frame: sel.frame)
+    frozen.image = NSImage(cgImage: rep.cgImage!, size: sel.frame.size); frozen.imageScaling = .scaleAxesIndependently
+    frozen.addSubview(sel)
+    let sw = NSWindow(contentRect: sel.frame, styleMask: .borderless, backing: .buffered, defer: false)
+    sw.contentView = frozen; sw.orderFrontRegardless()
+    func ev(_ t: NSEvent.EventType, _ x: CGFloat, _ y: CGFloat) -> NSEvent {
+        NSEvent.mouseEvent(with: t, location: CGPoint(x: x, y: y), modifierFlags: [], timestamp: 0, windowNumber: sw.windowNumber,
+                           context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+    }
+    sel.mouseMoved(with: ev(.mouseMoved, 200, 400))
+    shot(sw, "capture-crosshair")
+    sel.mouseDown(with: ev(.leftMouseDown, 150, 420)); sel.mouseDragged(with: ev(.leftMouseDragged, 620, 160))
+    shot(sw, "capture-selection")
+    sw.close()
 }

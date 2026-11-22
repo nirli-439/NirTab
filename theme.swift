@@ -223,5 +223,6 @@ func snapshotUI(_ dir: String) {
             w.close()
         }
     }
+    snapshotCapture(dir)
     print("snapshots in \(dir)")
 }

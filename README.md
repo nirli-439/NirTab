@@ -90,8 +90,11 @@ its setup instructions; NirTab does not silently install drivers or change Scree
 
 **Capture & Annotate…** (menu bar, or `open -g 'nirtab://capture'`) captures the display under the pointer at full
 resolution, then lets you select an area: the screen dims slightly, a crosshair shows the pointer's x, y, and dragging
-shows the selection's width × height (click or Return = whole display, Esc = cancel). Draw arrows/rectangles/circles, place text, pick a line width (3 sizes) and shadow (off + 3 levels), crop, undo/reset, then copy a PNG (also added to clipboard history if enabled)
-or save it; **Copy Text** uses macOS Vision OCR to copy recognized text. This is an independent implementation inspired
+shows the selection's width × height (click or Return = whole display, Esc = cancel). The editor follows macOS Markup:
+a native toolbar with Arrow / Rectangle / Oval / Text / Crop (keys A R O T C), Shape Style (3 line widths), Shadow
+(off + 3 levels), Color (8 Markup colors), Undo (⌘Z) and Clear All; the title bar shows the image size. Text is typed
+right on the image (click, type, Return). **Copy** (⌘C) copies a PNG (also added to clipboard history if enabled),
+**Save…** (⌘S) saves it, Esc closes; **Copy Text** uses macOS Vision OCR to copy recognized text. This is an independent implementation inspired
 by Capso's workflow; **not a copy of Capso's BSL source**.
 Capso's custom area/window/scroll capture tools, video/GIF editor, webcam, visual OCR selection, translation, cloud sharing, and full
 annotation editor are not included.
