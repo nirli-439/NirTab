@@ -63,12 +63,7 @@ final class BatteryMonitor: NSObject, ObservableObject, NSWindowDelegate {
     func open() {
         refresh()
         if window == nil {
-            let panel = NSPanel(contentViewController: NSHostingController(rootView: BatteryView(monitor: self)))
-            panel.title = "NirTab · Battery Health"
-            panel.styleMask = [.titled, .closable]
-            panel.isReleasedWhenClosed = false
-            panel.level = .floating
-            panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+            let panel = brandWindow("Battery Health", BatteryView(monitor: self), floating: true)
             panel.delegate = self
             window = panel
         }
@@ -76,10 +71,7 @@ final class BatteryMonitor: NSObject, ObservableObject, NSWindowDelegate {
         timer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in self?.refresh() }
         timer?.tolerance = 2
         if window?.isVisible != true {
-            let screen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? NSScreen.main
-            if let frame = screen?.visibleFrame, let size = window?.frame.size {
-                window?.setFrameOrigin(NSPoint(x: frame.midX - size.width / 2, y: frame.midY - size.height / 2))
-            }
+            if let window { centerOnMouseScreen(window) }
         }
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
@@ -91,35 +83,32 @@ struct BatteryView: View {
     @ObservedObject var monitor: BatteryMonitor
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 12) {
-                Image(systemName: "battery.100percent").font(.system(size: 32)).foregroundStyle(.green)
-                VStack(alignment: .leading) {
-                    Text("Battery Health").font(.title2.bold())
-                    Text(monitor.snapshot?.status ?? "No battery data available").foregroundStyle(.secondary)
-                }
-                Spacer()
-            }
+            BrandHeader(symbol: "battery.100percent", color: .green, title: "Battery Health",
+                        subtitle: monitor.snapshot?.status ?? "No battery data available")
             if let battery = monitor.snapshot {
-                meter("Current charge", value: battery.charge, color: .accentColor)
-                meter("Battery health", value: battery.health, color: (battery.health ?? 100) < 80 ? .orange : .green)
-                Divider()
-                ForEach(battery.rows, id: \.0) { row in
-                    HStack { Text(row.0).foregroundStyle(.secondary); Spacer(); Text(row.1).monospacedDigit() }
-                }
+                VStack(spacing: 14) {
+                    meter("Current charge", value: battery.charge, color: .purple)
+                    meter("Battery health", value: battery.health, color: (battery.health ?? 100) < 80 ? .orange : .green)
+                }.brandCard()
+                VStack(spacing: 7) {
+                    ForEach(battery.rows, id: \.0) { row in
+                        HStack { Text(row.0).foregroundStyle(.secondary); Spacer(); Text(row.1).monospacedDigit() }
+                    }
+                }.brandCard()
             } else {
                 Text("This Mac has no readable built-in battery. Try Refresh if it has just woken from sleep.")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.secondary).brandCard()
             }
-            Divider()
             HStack {
-                Text("Updated \(monitor.updated.formatted(date: .omitted, time: .standard))")
+                Text("Updated \(monitor.updated.formatted(date: .omitted, time: .standard)) · refreshes every 10 s")
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                Button("Refresh") { monitor.refresh() }
+                Button("Refresh") { monitor.refresh() }.buttonStyle(.borderedProminent).tint(.purple)
             }
-            Text("Live Mac battery data · refreshes every 10 seconds while open")
-                .font(.caption).foregroundStyle(.secondary)
-        }.padding(24).frame(width: 380)
+        }
+        .padding(.horizontal, 24).padding(.top, 34).padding(.bottom, 20)
+        .frame(width: 400)
+        .brandBackground()
     }
     private func meter(_ title: String, value: Double?, color: Color) -> some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -128,7 +117,15 @@ struct BatteryView: View {
                 Spacer()
                 Text(value.map { String(format: "%.1f%%", $0) } ?? "Unavailable").bold().monospacedDigit()
             }
-            if let value { ProgressView(value: min(100, max(0, value)), total: 100).tint(color) }
+            if let value {  // custom bar: ProgressView ignores .tint on macOS (same as Setup)
+                GeometryReader { g in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(.quaternary)
+                        Capsule().fill(LinearGradient(colors: [color.opacity(0.7), color], startPoint: .leading, endPoint: .trailing))
+                            .frame(width: g.size.width * min(100, max(0, value)) / 100)
+                    }
+                }.frame(height: 6)
+            }
         }
     }
 }

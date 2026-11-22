@@ -54,7 +54,7 @@ Enable **Snap windows by dragging to screen edges** to get a footprint and snap 
 Other apps may constrain the resulting window size or position.
 Actions can also be triggered without activating NirTab via `open -g 'nirtab://execute-action?name=left-half'`.
 
-**Experimental features** (menu bar → Experimental Features; clipboard history and Pomodoro are off by default):
+**Experimental features** (menu bar → Experimental; clipboard history and Pomodoro are off by default):
 - **AI app icons** (on by default): Claude, ChatGPT, Gemini and ArtCraft icons in the menu bar. A click opens the app;
   if it isn't installed, NirTab offers to download it from the official source, checks it with Gatekeeper
   (signed + notarized), installs it in /Applications and opens it. Gemini has no Mac download, so it opens gemini.google.com.
@@ -62,19 +62,19 @@ Actions can also be triggered without activating NirTab via `open -g 'nirtab://e
   pin it, or delete it. Up to 50 recent and 20 pinned items (16 MB per capture). Stored **unencrypted** in
   `~/Documents/NirTab/Clipboard/`; file entries reference the original file, rather than duplicating it.
   Disabling stops capture but keeps saved history until you delete it.
-  Enable **Clipboard Menu-Bar Icon** in Experimental Features for a separate clipboard icon; click it to open
+  Enable **Clipboard Menu-Bar Icon** in Experimental for a separate clipboard icon; click it to open
   history. The preference survives restarts; disabling clipboard history hides the icon without clearing the preference.
 - **Automatically copy screenshots**: With Clipboard history on, ⌘⇧3 (full screen) and ⌘⇧4 (selection/window)
   copy the image to the clipboard and save it in history under `~/Documents/NirTab/Clipboard/`. Screenshots taken this
-  way are not also saved on the Desktop. Turn this off in Experimental Features or Settings to restore macOS's normal
+  way are not also saved on the Desktop. Turn this off in Experimental or Settings to restore macOS's normal
   file-saving shortcuts. ⌃⌘⇧3/4 still use macOS's built-in clipboard shortcut.
 - **Pomodoro**: a second menu-bar icon shows the countdown. Start/pause/reset focus sessions or start a break from its
   menu. A coffee popup appears when focus ends and the break timer starts. Configure focus/break minutes in Settings.
-- **Keep Mac awake**: turn on the separate cup from Experimental Features. Click the cup to start/stop preventing sleep;
+- **Keep Mac awake**: turn on the separate cup from Experimental (Keep Mac Awake). Click the cup to start/stop preventing sleep;
   right-click for independent display/idle/disk/system choices and an optional 15-minute–8-hour or custom auto-off timer.
   The cup can return at login, but sleep prevention does not resume until you click it. Inspired by Caffeinate (MIT).
 
-**Coffee Break** (main menu): start a standalone 5-, 10- or 15-minute break without enabling Pomodoro.
+**Coffee Break** (menu bar → Tools): start a standalone 5-, 10- or 15-minute break without enabling Pomodoro.
 A separate cup shows the countdown; click it to pause/resume, restart or cancel. A popup and sound mark the end.
 No focus session starts afterward, and quitting/restarting NirTab clears the break. This does not keep the Mac awake.
 
@@ -96,13 +96,14 @@ by Capso's workflow; **not a copy of Capso's BSL source**.
 Capso's custom area/window/scroll capture tools, video/GIF editor, webcam, visual OCR selection, translation, cloud sharing, and full
 annotation editor are not included.
 
-**Convert Copied Document** (main menu): copy a document in Finder (⌘C), then pick how to convert it:
+**Convert Copied Document** (menu bar → Tools): copy a document in Finder (⌘C), then pick how to convert it:
 **Copy as Markdown** (replaces the clipboard with the Markdown), **Save as .md Next to File** (reveals it in Finder)
 or **Save as .md and Open**. Works with Word, PowerPoint, Excel, PDF (text-based), RTF, EPUB, CSV and OpenDocument;
 several copied files are converted together. Conversion uses [anydoc](https://github.com/firecrawl/anydoc) (MIT, by
 Firecrawl) and runs locally. It needs Node.js: NirTab uses a global `anydoc` if installed
 (`npm install -g @firecrawl/anydoc`), else `npx @firecrawl/anydoc` (downloaded on first use). Scanned PDFs get an extra
-**OCR** option that **uploads the file to Firecrawl Parse**; nothing is uploaded otherwise.
+**OCR & Copy as Markdown** option that **uploads the file to Firecrawl Parse**; nothing is uploaded otherwise.
+A small toast at the top of the screen shows progress and the result.
 
 **Tiles show:**
 - a window preview, plus the last picture taken of minimized windows
@@ -139,6 +140,7 @@ swift re/e2e.swift    # live check: minimize → listed with preview → restore
 /Applications/NirTab.app/Contents/MacOS/NirTab --test-recorder # shortcut recorder check
 /Applications/NirTab.app/Contents/MacOS/NirTab --test-background # image import/resize check
 /Applications/NirTab.app/Contents/MacOS/NirTab --test-extras # clipboard and timer checks
+/Applications/NirTab.app/Contents/MacOS/NirTab --snapshot-ui /tmp/nirtab-ui # render every window/popup/toast, light + dark, to PNGs
 /Applications/NirTab.app/Contents/MacOS/NirTab --test-docconvert ~/Downloads/some.docx # convert a copied file to Markdown (overwrites the clipboard)
 /Applications/NirTab.app/Contents/MacOS/NirTab --test-caffeinate # in-memory sleep assertion/menu checks
 /Applications/NirTab.app/Contents/MacOS/NirTab --test-coffee-break # one-shot break timer and completion popup

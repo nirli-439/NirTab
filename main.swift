@@ -1102,12 +1102,13 @@ func grantScreen() {
 struct IconTile: View {
     let symbol: String
     let color: Color
+    var size: CGFloat = 24
     var body: some View {
         Image(systemName: symbol)
-            .font(.system(size: 12, weight: .semibold))
+            .font(.system(size: size / 2, weight: .semibold))
             .foregroundStyle(.white)
-            .frame(width: 24, height: 24)
-            .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
+            .frame(width: size, height: size)
+            .background(RoundedRectangle(cornerRadius: size / 4, style: .continuous)
                 .fill(LinearGradient(colors: [color.opacity(0.8), color], startPoint: .top, endPoint: .bottom)))
     }
 }
@@ -1467,6 +1468,9 @@ if CommandLine.arguments.contains("--test-extras") {
     precondition(screenshotMode(21, [.maskCommand, .maskShift], historyEnabled: false, autoCopy: true) == nil)
     precondition(screenshotMode(20, [.maskCommand, .maskShift, .maskControl], historyEnabled: true, autoCopy: true) == nil)
     exit(0)
+}
+if let i = CommandLine.arguments.firstIndex(of: "--snapshot-ui"), i + 1 < CommandLine.arguments.count {
+    _ = NSApplication.shared; snapshotUI(CommandLine.arguments[i + 1]); exit(0)
 }
 if CommandLine.arguments.contains("--test-caffeinate") { _ = NSApplication.shared; testCaffeinate(); exit(0) }
 if CommandLine.arguments.contains("--test-coffee-break") { _ = NSApplication.shared; testCoffeeBreak(); exit(0) }
@@ -1936,16 +1940,18 @@ final class MenuBar: NSObject, NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
         let key = ["opt": "⌥", "ctrl": "⌃"][defaults.string(forKey: "hold") ?? ""] ?? "⌘"
-        let head = NSMenuItem(title: working ? "NirTab \(appVersion) — hold \(key), press Tab" : "NirTab — needs Accessibility to work", action: nil, keyEquivalent: "")
-        head.isEnabled = false
+        let head = NSMenuItem()
+        let headView = NSHostingView(rootView: MenuHeaderView(working: working, key: key))
+        headView.frame = NSRect(x: 0, y: 0, width: 300, height: 50)
+        head.view = headView
+        head.title = "NirTab \(appVersion)"  // for accessibility / tests
         menu.addItem(head)
         if !health.required {
-            let check = add(menu, "⚠︎ Finish Setup…", #selector(setup))
-            check.attributedTitle = NSAttributedString(string: "⚠︎ Finish Setup…", attributes: [.foregroundColor: NSColor.systemOrange])
+            let check = add(menu, "Finish Setup…", #selector(setup), symbol: "exclamationmark.triangle.fill")
+            check.attributedTitle = NSAttributedString(string: "Finish Setup…", attributes: [.foregroundColor: NSColor.systemOrange])
         }
-        menu.addItem(.separator())
 
-        // Windows
+        menu.addItem(.sectionHeader(title: "Windows"))
         let layouts = NSMenu()
         for start in stride(from: 0, to: rectangleActions.count, by: 16) {
             let group = NSMenu()
@@ -1958,16 +1964,15 @@ final class MenuBar: NSObject, NSMenuDelegate {
         menu.addItem(submenu("Window Layouts", layouts, symbol: "rectangle.split.2x1"))
         let front = NSWorkspace.shared.frontmostApplication
         if let id = front?.bundleIdentifier, id != Bundle.main.bundleIdentifier {
-            let ignored = add(menu, "Ignore \(front?.localizedName ?? "Frontmost App") for Layout Shortcuts", #selector(toggleIgnoredApp))
+            let ignored = add(menu, "Ignore \(front?.localizedName ?? "Frontmost App") for Layouts", #selector(toggleIgnoredApp), symbol: "nosign")
             ignored.state = (defaults.string(forKey: "rectangleIgnored") ?? "").split(separator: ",")
                 .map { $0.trimmingCharacters(in: .whitespaces) }.contains(id) ? .on : .off
         }
-        menu.addItem(.separator())
 
-        // Everyday tools
+        menu.addItem(.sectionHeader(title: "Tools"))
         add(menu, "Capture & Annotate…", #selector(capture), symbol: "camera.viewfinder")
         let convert = NSMenu(); convert.delegate = docConvertMenu; docConvertMenu.menuNeedsUpdate(convert)
-        menu.addItem(submenu("Convert Copied Document", convert, symbol: "doc.text"))
+        menu.addItem(submenu("Convert Copied Document", convert, symbol: "doc.richtext"))
         let breaks = NSMenu(); breaks.delegate = coffeeBreak; coffeeBreak.menuNeedsUpdate(breaks)
         menu.addItem(submenu("Coffee Break", breaks, symbol: "cup.and.saucer"))
         let tools = NSMenu()
@@ -1978,31 +1983,35 @@ final class MenuBar: NSObject, NSMenuDelegate {
         menu.addItem(submenu("More Tools", tools, symbol: "wrench.and.screwdriver"))
 
         let experimental = NSMenu()
-        let clips = add(experimental, "Clipboard History (⌥⌘V)", #selector(toggleClipboard))
+        experimental.addItem(.sectionHeader(title: "Clipboard"))
+        let clips = add(experimental, "Clipboard History", #selector(toggleClipboard), symbol: "doc.on.clipboard")
         clips.state = defaults.bool(forKey: "clipboardEnabled") ? .on : .off
         let on = clips.state == .on
-        if on { add(experimental, "Open Clipboard History…", #selector(showClipboard)).indentationLevel = 1 }
-        let clipboardIcon = add(experimental, "Clipboard Menu-Bar Icon", #selector(toggleClipboardIcon))
+        if on {
+            let open = add(experimental, "Open Clipboard History…", #selector(showClipboard), key: "v", symbol: "list.bullet.rectangle")
+            open.keyEquivalentModifierMask = [.option, .command]
+        }
+        let clipboardIcon = add(experimental, "Clipboard Menu-Bar Icon", #selector(toggleClipboardIcon), symbol: "menubar.rectangle")
         clipboardIcon.state = defaults.bool(forKey: "clipboardIconEnabled") ? .on : .off
-        let screenshots = add(experimental, "Auto-Copy Screenshots (⌘⇧3 / ⌘⇧4)", #selector(toggleScreenshots))
+        let screenshots = add(experimental, "Auto-Copy Screenshots (⌘⇧3 / ⌘⇧4)", #selector(toggleScreenshots), symbol: "camera")
         screenshots.state = defaults.bool(forKey: "autoCopyScreenshots") ? .on : .off
-        for i in [clipboardIcon, screenshots] { i.isEnabled = on; i.indentationLevel = 1 }
-        experimental.addItem(.separator())
-        let timer = add(experimental, "Pomodoro Timer", #selector(togglePomodoro))
+        for i in [clipboardIcon, screenshots] { i.isEnabled = on }
+        experimental.addItem(.sectionHeader(title: "Extras"))
+        let timer = add(experimental, "Pomodoro Timer", #selector(togglePomodoro), symbol: "timer")
         timer.state = defaults.bool(forKey: "pomodoroEnabled") ? .on : .off
-        let awake = add(experimental, "Keep Mac Awake (Caffeinate)", #selector(toggleCaffeinate))
+        let awake = add(experimental, "Keep Mac Awake", #selector(toggleCaffeinate), symbol: "cup.and.heat.waves")
         awake.state = defaults.bool(forKey: "caffeinateEnabled") ? .on : .off
-        let ai = add(experimental, "AI App Icons (Claude, ChatGPT, Gemini, ArtCraft)", #selector(toggleAIIcons))
+        let ai = add(experimental, "AI App Icons", #selector(toggleAIIcons), symbol: "sparkles")
         ai.state = defaults.bool(forKey: "aiIconsEnabled") ? .on : .off
-        menu.addItem(submenu("Experimental Features", experimental, symbol: "flask"))
-        menu.addItem(.separator())
+        ai.toolTip = "Claude, ChatGPT, Gemini and ArtCraft in the menu bar"
+        menu.addItem(submenu("Experimental", experimental, symbol: "flask"))
 
-        // App
-        add(menu, "Settings…", #selector(settings), key: ",")
-        let login = add(menu, "Launch at Login", #selector(toggleLogin))
+        menu.addItem(.separator())
+        add(menu, "Settings…", #selector(settings), key: ",", symbol: "gearshape")
+        let login = add(menu, "Launch at Login", #selector(toggleLogin), symbol: "power")
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
-        add(menu, sourceDir != nil ? "Update (Rebuild from Source)" : "Check for Updates…", #selector(update))
-        add(menu, "Restart NirTab", #selector(restart))
+        add(menu, sourceDir != nil ? "Rebuild from Source" : "Check for Updates…", #selector(update), symbol: "arrow.down.circle")
+        add(menu, "Restart NirTab", #selector(restart), symbol: "arrow.clockwise")
         menu.addItem(.separator())
         add(menu, "Quit NirTab", #selector(quit), key: "q")
     }
@@ -2011,13 +2020,13 @@ final class MenuBar: NSObject, NSMenuDelegate {
     func add(_ menu: NSMenu, _ title: String, _ action: Selector, key: String = "", symbol: String? = nil) -> NSMenuItem {
         let i = NSMenuItem(title: title, action: action, keyEquivalent: key)
         i.target = self
-        if let symbol { i.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil) }
+        if let symbol { i.image = menuSymbol(symbol) }
         menu.addItem(i)
         return i
     }
     func submenu(_ title: String, _ sub: NSMenu, symbol: String? = nil) -> NSMenuItem {
         let i = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-        if let symbol { i.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil) }
+        if let symbol { i.image = menuSymbol(symbol) }
         i.submenu = sub
         return i
     }
@@ -2044,7 +2053,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
     }
     @objc func fillPreviews() {
         captureMissingPreviews { n in
-            showAlert("Previews", n == 0 ? "Every minimized window already has a preview." : "Captured previews for \(n) minimized window\(n == 1 ? "" : "s").")
+            showToast(n == 0 ? "Every minimized window already has a preview" : "Captured \(n) preview\(n == 1 ? "" : "s")", symbol: "rectangle.stack")
         }
     }
     @objc func toggleAIIcons() {
@@ -2145,8 +2154,8 @@ if CommandLine.arguments.contains("--test-tap-recovery") {
 if CommandLine.arguments.contains("--test-pomodoro-ui") {
     let menu = menuBar.item.menu!
     menuBar.menuNeedsUpdate(menu)
-    let options = menu.item(withTitle: "Experimental Features")?.submenu
-    guard options?.item(withTitle: "Clipboard History (⌥⌘V)") != nil,
+    let options = menu.item(withTitle: "Experimental")?.submenu
+    guard options?.item(withTitle: "Clipboard History") != nil,
           options?.item(withTitle: "Pomodoro Timer") != nil else { print("experimental menu FAIL"); exit(1) }
     menuBar.toggleClipboard()
     precondition(defaults.bool(forKey: "clipboardEnabled") && clipboard.timer != nil)
@@ -2190,9 +2199,9 @@ if CommandLine.arguments.contains("--test-rectangle-ui") {
     precondition(menu.item(withTitle: "Coffee Break")?.submenu?.item(withTitle: "5-minute coffee break")?.target === coffeeBreak)
     precondition(menu.item(withTitle: "More Tools")?.submenu?.item(withTitle: "Battery Health…")?.action == #selector(MenuBar.showBattery))
     precondition(menu.item(withTitle: "More Tools")?.submenu?.item(withTitle: "Install DisplayLink Manager…")?.action == #selector(MenuBar.installDisplayLink))
-    precondition(menu.item(withTitle: "Experimental Features")?.submenu?.item(withTitle: "Clipboard Menu-Bar Icon") != nil)
+    precondition(menu.item(withTitle: "Experimental")?.submenu?.item(withTitle: "Clipboard Menu-Bar Icon") != nil)
     precondition(menu.item(withTitle: "Capture Area / Window / Record…") == nil)  // one capture item: Capture & Annotate
-    precondition(menu.item(withTitle: "Experimental Features")?.submenu?.item(withTitle: "Keep Mac Awake (Caffeinate)") != nil)
+    precondition(menu.item(withTitle: "Experimental")?.submenu?.item(withTitle: "Keep Mac Awake") != nil)
     openSettings()
     precondition(settingsWindow?.isVisible == true)
     print("rectangle UI PASS: \(items.count) actions, settings visible")

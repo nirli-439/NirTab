@@ -165,37 +165,48 @@ let clipboardStatus = ClipboardStatus()
 struct ClipboardView: View {
     @ObservedObject var history: ClipboardHistory
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Clipboard history").font(.title2.bold())
-                Spacer()
-                Text("⌥⌘V").foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 14) {
+            BrandHeader(symbol: "doc.on.clipboard", color: .orange, title: "Clipboard History",
+                        subtitle: "Saved unencrypted in Documents/NirTab · files are referenced, not copied") {
+                HStack(spacing: 3) { Keycap(key: "⌥"); Keycap(key: "⌘"); Keycap(key: "V") }
             }
-            Text("Saved in Documents/NirTab · not encrypted · file entries reference their original files")
-                .font(.caption).foregroundStyle(.secondary)
-            if let error = history.storageError { Text("Couldn't save clipboard: \(error)").foregroundStyle(.red) }
-            if history.clips.isEmpty { Spacer(); Text("Copy text, an image, or files to get started.").foregroundStyle(.secondary); Spacer() }
-            else {
+            if let error = history.storageError {
+                Label("Couldn't save clipboard: \(error)", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red)
+            }
+            if history.clips.isEmpty {
+                VStack(spacing: 10) {
+                    Image(systemName: "doc.on.clipboard").font(.system(size: 38)).foregroundStyle(.tertiary)
+                    Text("Copy text, an image, or files to get started.").foregroundStyle(.secondary)
+                }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
                 ScrollView {
                     LazyVStack(spacing: 8) {
                         ForEach(history.clips) { clip in
-                            HStack(spacing: 10) {
-                                if let thumbnail = clip.thumbnail {
-                                    Image(nsImage: thumbnail).resizable().scaledToFit().frame(width: 32, height: 32)
-                                } else { Image(systemName: clip.symbol).frame(width: 32) }
+                            HStack(spacing: 12) {
+                                Group {
+                                    if let thumbnail = clip.thumbnail {
+                                        Image(nsImage: thumbnail).resizable().scaledToFill().frame(width: 34, height: 34)
+                                            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                                    } else { IconTile(symbol: clip.symbol, color: clip.pinned ? .purple : .gray, size: 34) }
+                                }
                                 Text(clip.label).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
-                                Button("Copy") { if history.copy(clip) { clipboardWindow?.close() } }
                                 Button { history.pin(clip) } label: {
-                                    Image(systemName: clip.pinned ? "pin.fill" : "pin")
-                                }.help(clip.pinned ? "Unpin" : "Pin")
+                                    Image(systemName: clip.pinned ? "pin.fill" : "pin").foregroundStyle(clip.pinned ? .purple : .secondary)
+                                }.buttonStyle(.borderless).help(clip.pinned ? "Unpin" : "Pin")
                                     .disabled(!clip.pinned && history.clips.filter(\.pinned).count >= 20)
-                                Button { history.remove(clip) } label: { Image(systemName: "trash") }.help("Delete")
-                            }.padding(9).background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 9))
+                                Button { history.remove(clip) } label: { Image(systemName: "trash").foregroundStyle(.secondary) }
+                                    .buttonStyle(.borderless).help("Delete")
+                                Button("Copy") { if history.copy(clip) { clipboardWindow?.close() } }
+                                    .buttonStyle(.borderedProminent).tint(.purple)
+                            }.brandCard(padding: 9)
                         }
                     }
                 }
             }
-        }.padding(20).frame(width: 560, height: 500)
+        }
+        .padding(.horizontal, 24).padding(.top, 34).padding(.bottom, 20)
+        .frame(width: 580, height: 520)
+        .brandBackground()
     }
 }
 
@@ -203,11 +214,7 @@ func openClipboard() {
     guard defaults.bool(forKey: "clipboardEnabled") else { return }
     clipboard.poll()
     if clipboardWindow == nil {
-        let w = NSWindow(contentViewController: NSHostingController(rootView: ClipboardView(history: clipboard)))
-        w.title = "NirTab Clipboard"
-        w.styleMask = [.titled, .closable]
-        w.isReleasedWhenClosed = false
-        clipboardWindow = w
+        clipboardWindow = brandWindow("Clipboard", ClipboardView(history: clipboard))
     }
     NSApp.activate(ignoringOtherApps: true)
     clipboardWindow?.center()
@@ -225,7 +232,7 @@ final class Pomodoro: NSObject, NSMenuDelegate {
     var deadline: Date?
     var paused: TimeInterval?
     var timer: Timer?
-    var popup: NSPanel?
+    var popup: NSWindow?
 
     override init() {
         phase = defaults.string(forKey: "timerPhase") ?? "idle"
@@ -288,27 +295,20 @@ final class Pomodoro: NSObject, NSMenuDelegate {
     @objc func reset() { phase = "idle"; deadline = nil; paused = nil; popup?.close(); persist(); update() }
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
-        let title = NSMenuItem(title: phase == "idle" ? "Pomodoro · ready" : "\(phase.capitalized) · \(timerText(deadline?.timeIntervalSinceNow ?? paused ?? 0))", action: nil, keyEquivalent: "")
-        title.isEnabled = false; menu.addItem(title)
-        for (name, action) in [("Start Focus", #selector(startFocus)), (deadline == nil ? "Resume" : "Pause", #selector(pauseResume)), ("Start Break ☕", #selector(startBreak)), ("Reset", #selector(reset))] {
+        menu.addItem(.sectionHeader(title: phase == "idle" ? "Pomodoro · ready" : "\(phase.capitalized) · \(timerText(deadline?.timeIntervalSinceNow ?? paused ?? 0))"))
+        for (name, symbol, action) in [("Start Focus", "brain.head.profile", #selector(startFocus)),
+                                       (deadline == nil ? "Resume" : "Pause", deadline == nil ? "play.fill" : "pause.fill", #selector(pauseResume)),
+                                       ("Start Break", "cup.and.saucer", #selector(startBreak)), ("Reset", "arrow.counterclockwise", #selector(reset))] {
             let row = NSMenuItem(title: name, action: action, keyEquivalent: "")
             row.target = self; row.isEnabled = name != "Resume" || paused != nil
+            row.image = menuSymbol(symbol)
             menu.addItem(row)
         }
     }
     func breakPopup() {
-        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 340, height: 170), styleMask: [.titled, .closable, .nonactivatingPanel], backing: .buffered, defer: false)
-        panel.title = "NirTab · Coffee break"
-        panel.level = .floating
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.contentView = NSHostingView(rootView: VStack(spacing: 12) {
-            Image(systemName: "cup.and.saucer.fill").font(.system(size: 34)).foregroundStyle(.brown)
-            Text("Break time!").font(.title2.bold())
-            Text("Take a break. Your timer is running.").foregroundStyle(.secondary)
-            Button("Dismiss") { panel.close() }
-        }.frame(width: 340, height: 150))
-        popup = panel
-        panel.center(); panel.orderFrontRegardless()
+        popup?.close()
+        popup = showBrandPopup(symbol: "cup.and.saucer.fill", color: .brown, title: "Break time",
+                               message: "Focus session done. Your break timer is running.", button: "Dismiss")
     }
 }
 
@@ -320,7 +320,7 @@ final class CoffeeBreak: NSObject, NSMenuDelegate {
     private(set) var deadline: Date?
     private(set) var paused: TimeInterval?
     private(set) var timer: Timer?
-    private(set) var popup: NSPanel?
+    private(set) var popup: NSWindow?
 
     @objc func start(_ sender: NSMenuItem) { start(minutes: sender.tag) }
     func start(minutes: Int, now: Date = Date()) {
@@ -366,38 +366,21 @@ final class CoffeeBreak: NSObject, NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
         if item != nil {
-            let header = NSMenuItem(title: "Coffee break · " + (paused == nil ? "running" : "paused"), action: nil, keyEquivalent: "")
-            menu.addItem(header)
+            menu.addItem(.sectionHeader(title: "Coffee break · " + (paused == nil ? "running" : "paused")))
             let pause = NSMenuItem(title: paused == nil ? "Pause" : "Resume", action: #selector(menuPauseResume), keyEquivalent: "")
-            pause.target = self; menu.addItem(pause)
+            pause.target = self; pause.image = menuSymbol(paused == nil ? "pause.fill" : "play.fill"); menu.addItem(pause)
             let stop = NSMenuItem(title: "Cancel break", action: #selector(cancel), keyEquivalent: "")
-            stop.target = self; menu.addItem(stop)
+            stop.target = self; stop.image = menuSymbol("xmark"); menu.addItem(stop)
             menu.addItem(.separator())
         }
         for minutes in [5, 10, 15] {
             let row = NSMenuItem(title: "\(minutes)-minute coffee break", action: #selector(start(_:)), keyEquivalent: "")
-            row.tag = minutes; row.target = self; menu.addItem(row)
+            row.tag = minutes; row.target = self; row.image = menuSymbol("\(minutes).circle"); menu.addItem(row)
         }
     }
     private func finishedPopup() {
-        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 340, height: 180),
-                            styleMask: [.titled, .closable, .nonactivatingPanel], backing: .buffered, defer: false)
-        panel.title = "NirTab · Coffee break finished"
-        panel.isReleasedWhenClosed = false
-        panel.level = .floating
-        panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
-        panel.contentView = NSHostingView(rootView: VStack(spacing: 12) {
-            Image(systemName: "cup.and.saucer.fill").font(.system(size: 34)).foregroundStyle(.brown)
-            Text("Coffee break finished").font(.title2.bold())
-            Text("Ready when you are. No focus timer starts.").foregroundStyle(.secondary)
-            Button("Done") { [weak self] in self?.cancel() }
-        }.frame(width: 340, height: 180))
-        popup = panel
-        let screen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? NSScreen.main
-        if let frame = screen?.visibleFrame {
-            panel.setFrameOrigin(NSPoint(x: frame.midX - panel.frame.width / 2, y: frame.midY - panel.frame.height / 2))
-        }
-        panel.orderFrontRegardless()
+        popup = showBrandPopup(symbol: "cup.and.saucer.fill", color: .brown, title: "Break's over",
+                               message: "Ready when you are. No focus timer starts.", button: "Done") { [weak self] in self?.cancel() }
     }
 }
 let coffeeBreak = CoffeeBreak()

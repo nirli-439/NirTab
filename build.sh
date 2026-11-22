@@ -16,11 +16,11 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 if [ $RELEASE = 1 ]; then
   for arch in arm64 x86_64; do
-    swiftc -O -swift-version 5 -target $arch-apple-macos$MIN main.swift extras.swift rectangle.swift caffeinate.swift capture.swift battery.swift docconvert.swift -o "${TMPDIR:-/tmp}/NirTab-$arch"
+    swiftc -O -swift-version 5 -target $arch-apple-macos$MIN main.swift extras.swift rectangle.swift caffeinate.swift capture.swift battery.swift docconvert.swift theme.swift -o "${TMPDIR:-/tmp}/NirTab-$arch"
   done
   lipo -create "${TMPDIR:-/tmp}/NirTab-arm64" "${TMPDIR:-/tmp}/NirTab-x86_64" -output "$APP/Contents/MacOS/NirTab"
 else
-  swiftc -O -swift-version 5 -target "$(uname -m)-apple-macos$MIN" main.swift extras.swift rectangle.swift caffeinate.swift capture.swift battery.swift docconvert.swift -o "$APP/Contents/MacOS/NirTab"  # fails → old app keeps running
+  swiftc -O -swift-version 5 -target "$(uname -m)-apple-macos$MIN" main.swift extras.swift rectangle.swift caffeinate.swift capture.swift battery.swift docconvert.swift theme.swift -o "$APP/Contents/MacOS/NirTab"  # fails → old app keeps running
 fi
 cp icons/AppIcon.icns "$APP/Contents/Resources/"
 SOURCE_KEY=""

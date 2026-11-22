@@ -146,21 +146,19 @@ final class Caffeinate: NSObject, NSMenuDelegate {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
-        let header = NSMenuItem(title: assertions.isEmpty ? "Caffeinate · off" :
-            "Caffeinate · " + (deadline.map { countdown($0.timeIntervalSinceNow) + " left" } ?? "on until disabled"),
-                                action: nil, keyEquivalent: "")
-        header.isEnabled = false; menu.addItem(header)
+        menu.addItem(.sectionHeader(title: assertions.isEmpty ? "Keep awake · off" :
+            "Keep awake · " + (deadline.map { countdown($0.timeIntervalSinceNow) + " left" } ?? "on until turned off")))
         if let error {
             let warning = NSMenuItem(title: "⚠︎ " + error, action: nil, keyEquivalent: "")
             warning.isEnabled = false; menu.addItem(warning)
         }
-        menu.addItem(.separator())
+        menu.addItem(.sectionHeader(title: "Prevent"))
         for kind in SleepKind.allCases {
             let row = NSMenuItem(title: kind.title, action: #selector(toggleKind(_:)), keyEquivalent: "")
             row.target = self; row.tag = kind.rawValue; row.state = selected.contains(kind) ? .on : .off
             menu.addItem(row)
         }
-        menu.addItem(.separator())
+        menu.addItem(.sectionHeader(title: "Duration"))
         for (title, value) in [("Until turned off", 0), ("15 minutes", 15), ("30 minutes", 30),
                                ("1 hour", 60), ("2 hours", 120), ("4 hours", 240), ("8 hours", 480)] {
             let row = NSMenuItem(title: title, action: #selector(chooseMinutes(_:)), keyEquivalent: "")
@@ -169,8 +167,8 @@ final class Caffeinate: NSObject, NSMenuDelegate {
         }
         let custom = NSMenuItem(title: "Custom minutes…", action: #selector(customMinutes), keyEquivalent: "")
         custom.target = self; menu.addItem(custom)
-        let toggleItem = NSMenuItem(title: assertions.isEmpty ? "Turn on" : "Turn off", action: #selector(menuToggle), keyEquivalent: "")
-        toggleItem.target = self; menu.addItem(.separator()); menu.addItem(toggleItem)
+        let toggleItem = NSMenuItem(title: assertions.isEmpty ? "Turn On" : "Turn Off", action: #selector(menuToggle), keyEquivalent: "")
+        toggleItem.target = self; toggleItem.image = menuSymbol("power"); menu.addItem(.separator()); menu.addItem(toggleItem)
     }
 
     @objc private func menuToggle() { toggle() }

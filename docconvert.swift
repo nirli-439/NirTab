@@ -8,12 +8,20 @@ let anydocExtensions: Set<String> = ["doc", "docx", "docm", "dotx", "ppt", "pps"
 
 enum DocConvertMode: String, CaseIterable {
     case copy, save, saveOpen, ocrCopy
+    var symbol: String {
+        switch self {
+        case .copy: return "doc.on.doc"
+        case .save: return "square.and.arrow.down"
+        case .saveOpen: return "arrow.up.forward.app"
+        case .ocrCopy: return "text.viewfinder"
+        }
+    }
     var title: String {
         switch self {
         case .copy: return "Copy as Markdown"
         case .save: return "Save as .md Next to File"
         case .saveOpen: return "Save as .md and Open"
-        case .ocrCopy: return "Scanned PDF → Copy as Markdown (uploads to Firecrawl OCR)"
+        case .ocrCopy: return "OCR & Copy as Markdown"
         }
     }
 }
@@ -66,6 +74,8 @@ func convertCopiedDocuments(_ mode: DocConvertMode, files: [URL]? = nil, done: (
         showAlert("No document copied", "Copy a document in Finder (⌘C) first: Word, PowerPoint, Excel, PDF, RTF, EPUB, CSV or OpenDocument.")
         done?(false); return
     }
+    showToast(files.count == 1 ? "Converting \(files[0].lastPathComponent)…" : "Converting \(files.count) documents…",
+              busy: true, duration: nil)
     DispatchQueue.global(qos: .userInitiated).async {
         var parts: [String] = [], failures: [String] = [], saved: [URL] = []
         for file in files {
@@ -94,8 +104,17 @@ func convertCopiedDocuments(_ mode: DocConvertMode, files: [URL]? = nil, done: (
                 saved.forEach { NSWorkspace.shared.open($0) }
             }
             let ok = failures.isEmpty
-            if ok { NSSound(named: "Glass")?.play() }
-            else { showAlert("Couldn't convert \(failures.count == files.count ? "the document" : "some documents")", failures.joined(separator: "\n\n")) }
+            if ok {
+                let n = files.count == 1 ? "" : " (\(files.count) files)"
+                switch mode {
+                case .copy, .ocrCopy: showToast("Markdown copied\(n)", symbol: "doc.on.clipboard", color: .purple)
+                case .save, .saveOpen: showToast(saved.count == 1 ? "Saved \(saved[0].lastPathComponent)" : "Saved \(saved.count) Markdown files",
+                                                 symbol: "checkmark", color: .green)
+                }
+            } else {
+                showToast("Conversion failed", symbol: "xmark", color: .red, duration: 1.2)
+                showAlert("Couldn't convert \(failures.count == files.count ? "the document" : "some documents")", failures.joined(separator: "\n\n"))
+            }
             done?(ok)
         }
     }
@@ -106,25 +125,31 @@ final class DocConvertMenu: NSObject, NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
         let files = copiedDocuments()
-        let head = NSMenuItem(title: files.isEmpty ? "Copy a document in Finder first (⌘C)"
-                              : files.count == 1 ? "Copied: \(files[0].lastPathComponent)" : "Copied: \(files.count) documents",
-                              action: nil, keyEquivalent: "")
-        head.isEnabled = false
-        menu.addItem(head)
         if files.isEmpty {
-            let hint = NSMenuItem(title: "Word, PowerPoint, Excel, PDF, RTF, EPUB, CSV, OpenDocument", action: nil, keyEquivalent: "")
-            hint.isEnabled = false
+            menu.addItem(.sectionHeader(title: "Nothing to convert"))
+            let hint = NSMenuItem(title: "Copy a document in Finder (⌘C) first", action: nil, keyEquivalent: "")
+            hint.image = menuSymbol("doc.badge.plus"); hint.isEnabled = false
             menu.addItem(hint)
+            let kinds = NSMenuItem(title: "Word · PowerPoint · Excel · PDF · RTF · EPUB · CSV", action: nil, keyEquivalent: "")
+            kinds.isEnabled = false
+            menu.addItem(kinds)
             return
         }
-        menu.addItem(.separator())
+        menu.addItem(.sectionHeader(title: "Copied"))
+        let head = NSMenuItem(title: files.count == 1 ? files[0].lastPathComponent : "\(files.count) documents", action: nil, keyEquivalent: "")
+        let icon = NSWorkspace.shared.icon(forFile: files[0].path); icon.size = NSSize(width: 16, height: 16)
+        head.image = icon; head.isEnabled = false
+        menu.addItem(head)
+        menu.addItem(.sectionHeader(title: "Convert to Markdown"))
         for mode in DocConvertMode.allCases {
             if mode == .ocrCopy {
                 guard files.contains(where: { $0.pathExtension.lowercased() == "pdf" }) else { continue }
-                menu.addItem(.separator())
+                menu.addItem(.sectionHeader(title: "Scanned PDF · uploads to Firecrawl"))
             }
             let item = NSMenuItem(title: mode.title, action: #selector(convert(_:)), keyEquivalent: "")
             item.target = self
+            item.image = menuSymbol(mode.symbol)
+            if mode == .ocrCopy { item.toolTip = "For image-only PDFs. Uploads the file to Firecrawl Parse." }
             item.representedObject = mode.rawValue
             menu.addItem(item)
         }
