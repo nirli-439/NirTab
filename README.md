@@ -17,7 +17,7 @@ open window. Each one shows a live preview. Release ⌘ to jump to the selected 
    - launch at login (optional)
 
    Each permission is checked by a fresh process, which catches the case where System Settings shows a switch as on
-   but macOS still refuses it. You can reopen the checklist anytime: menu bar → Setup Checklist.
+   but macOS still refuses it. You can reopen the checklist anytime: menu bar → More Tools → Setup Checklist.
 
 Requires macOS 14 or later, Apple Silicon or Intel. Quit other ⌘Tab tools such as AltTab first.
 
@@ -62,7 +62,7 @@ Actions can also be triggered without activating NirTab via `open -g 'nirtab://e
   pin it, or delete it. Up to 50 recent and 20 pinned items (16 MB per capture). Stored **unencrypted** in
   `~/Documents/NirTab/Clipboard/`; file entries reference the original file, rather than duplicating it.
   Disabling stops capture but keeps saved history until you delete it.
-  Enable **Show clipboard menu-bar icon** in Experimental Features for a separate clipboard icon; click it to open
+  Enable **Clipboard Menu-Bar Icon** in Experimental Features for a separate clipboard icon; click it to open
   history. The preference survives restarts; disabling clipboard history hides the icon without clearing the preference.
 - **Automatically copy screenshots**: With Clipboard history on, ⌘⇧3 (full screen) and ⌘⇧4 (selection/window)
   copy the image to the clipboard and save it in history under `~/Documents/NirTab/Clipboard/`. Screenshots taken this
@@ -78,14 +78,14 @@ Actions can also be triggered without activating NirTab via `open -g 'nirtab://e
 A separate cup shows the countdown; click it to pause/resume, restart or cancel. A popup and sound mark the end.
 No focus session starts afterward, and quitting/restarting NirTab clears the break. This does not keep the Mac awake.
 
-**Battery Health (coconutBattery-style)…** opens a built-in popup with current charge, battery health (full charge
+**More Tools → Battery Health…** (coconutBattery-style) opens a built-in popup with current charge, battery health (full charge
 capacity / design capacity), capacities in mAh, cycle count, temperature, voltage and adapter wattage. It refreshes
 every 10 seconds while open; **Refresh** updates immediately. Missing sensors show **Unavailable**, and desktops
 without a battery show an empty state. Also opens via `open -g 'nirtab://battery'`.
 This is an independent Mac battery monitor inspired by coconutBattery, not the proprietary app embedded or bundled.
 iPhone/iPad monitoring, battery history and coconutBattery's other features are not included.
 
-**Install DisplayLink Manager…** opens Synaptics' official macOS downloads page. Choose the installer there and follow
+**More Tools → Install DisplayLink Manager…** opens Synaptics' official macOS downloads page. Choose the installer there and follow
 its setup instructions; NirTab does not silently install drivers or change Screen Recording permissions.
 
 **Capture & Annotate…** (menu bar, or `open -g 'nirtab://capture'`) captures the display under the pointer at full
@@ -95,6 +95,14 @@ or save it; **Copy Text** uses macOS Vision OCR to copy recognized text. This is
 by Capso's workflow; **not a copy of Capso's BSL source**.
 Capso's custom area/window/scroll capture tools, video/GIF editor, webcam, visual OCR selection, translation, cloud sharing, and full
 annotation editor are not included.
+
+**Convert Copied Document** (main menu): copy a document in Finder (⌘C), then pick how to convert it:
+**Copy as Markdown** (replaces the clipboard with the Markdown), **Save as .md Next to File** (reveals it in Finder)
+or **Save as .md and Open**. Works with Word, PowerPoint, Excel, PDF (text-based), RTF, EPUB, CSV and OpenDocument;
+several copied files are converted together. Conversion uses [anydoc](https://github.com/firecrawl/anydoc) (MIT, by
+Firecrawl) and runs locally. It needs Node.js: NirTab uses a global `anydoc` if installed
+(`npm install -g @firecrawl/anydoc`), else `npx @firecrawl/anydoc` (downloaded on first use). Scanned PDFs get an extra
+**OCR** option that **uploads the file to Firecrawl Parse**; nothing is uploaded otherwise.
 
 **Tiles show:**
 - a window preview, plus the last picture taken of minimized windows
@@ -131,6 +139,7 @@ swift re/e2e.swift    # live check: minimize → listed with preview → restore
 /Applications/NirTab.app/Contents/MacOS/NirTab --test-recorder # shortcut recorder check
 /Applications/NirTab.app/Contents/MacOS/NirTab --test-background # image import/resize check
 /Applications/NirTab.app/Contents/MacOS/NirTab --test-extras # clipboard and timer checks
+/Applications/NirTab.app/Contents/MacOS/NirTab --test-docconvert ~/Downloads/some.docx # convert a copied file to Markdown (overwrites the clipboard)
 /Applications/NirTab.app/Contents/MacOS/NirTab --test-caffeinate # in-memory sleep assertion/menu checks
 /Applications/NirTab.app/Contents/MacOS/NirTab --test-coffee-break # one-shot break timer and completion popup
 /Applications/NirTab.app/Contents/MacOS/NirTab --test-battery # battery parsing, popup and refresh lifecycle

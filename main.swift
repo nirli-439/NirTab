@@ -1939,13 +1939,13 @@ final class MenuBar: NSObject, NSMenuDelegate {
         let head = NSMenuItem(title: working ? "NirTab \(appVersion) — hold \(key), press Tab" : "NirTab — needs Accessibility to work", action: nil, keyEquivalent: "")
         head.isEnabled = false
         menu.addItem(head)
+        if !health.required {
+            let check = add(menu, "⚠︎ Finish Setup…", #selector(setup))
+            check.attributedTitle = NSAttributedString(string: "⚠︎ Finish Setup…", attributes: [.foregroundColor: NSColor.systemOrange])
+        }
         menu.addItem(.separator())
-        add(menu, "Settings…", #selector(settings), key: ",")
-        let check = add(menu, health.required ? "Setup Checklist ✓" : "⚠︎ Finish Setup…", #selector(setup))
-        if !health.required { check.attributedTitle = NSAttributedString(string: "⚠︎ Finish Setup…", attributes: [.foregroundColor: NSColor.systemOrange]) }
-        let login = add(menu, "Launch at Login", #selector(toggleLogin))
-        login.state = SMAppService.mainApp.status == .enabled ? .on : .off
-        menu.addItem(.separator())
+
+        // Windows
         let layouts = NSMenu()
         for start in stride(from: 0, to: rectangleActions.count, by: 16) {
             let group = NSMenu()
@@ -1953,57 +1953,72 @@ final class MenuBar: NSObject, NSMenuDelegate {
                 let item = add(group, title, #selector(runLayout(_:)))
                 item.representedObject = id
             }
-            let groupItem = NSMenuItem(title: "\(rectangleActions[start].1) …", action: nil, keyEquivalent: "")
-            groupItem.submenu = group
-            layouts.addItem(groupItem)
+            layouts.addItem(submenu("\(rectangleActions[start].1) …", group))
         }
-        let layoutItem = NSMenuItem(title: "Window Layouts", action: nil, keyEquivalent: "")
-        layoutItem.submenu = layouts
-        menu.addItem(layoutItem)
-        let ignoredApp = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? ""
-        if !ignoredApp.isEmpty && ignoredApp != Bundle.main.bundleIdentifier {
-            let ignored = add(menu, "Ignore Frontmost App for Layout Shortcuts", #selector(toggleIgnoredApp))
+        menu.addItem(submenu("Window Layouts", layouts, symbol: "rectangle.split.2x1"))
+        let front = NSWorkspace.shared.frontmostApplication
+        if let id = front?.bundleIdentifier, id != Bundle.main.bundleIdentifier {
+            let ignored = add(menu, "Ignore \(front?.localizedName ?? "Frontmost App") for Layout Shortcuts", #selector(toggleIgnoredApp))
             ignored.state = (defaults.string(forKey: "rectangleIgnored") ?? "").split(separator: ",")
-                .map { $0.trimmingCharacters(in: .whitespaces) }.contains(ignoredApp) ? .on : .off
+                .map { $0.trimmingCharacters(in: .whitespaces) }.contains(id) ? .on : .off
         }
         menu.addItem(.separator())
-        add(menu, "Capture & Annotate…", #selector(capture))
-        add(menu, "Battery Health (coconutBattery-style)…", #selector(showBattery))
-        let coffee = NSMenuItem(title: "Coffee Break", action: nil, keyEquivalent: "")
+
+        // Everyday tools
+        add(menu, "Capture & Annotate…", #selector(capture), symbol: "camera.viewfinder")
+        let convert = NSMenu(); convert.delegate = docConvertMenu; docConvertMenu.menuNeedsUpdate(convert)
+        menu.addItem(submenu("Convert Copied Document", convert, symbol: "doc.text"))
         let breaks = NSMenu(); breaks.delegate = coffeeBreak; coffeeBreak.menuNeedsUpdate(breaks)
-        coffee.submenu = breaks; menu.addItem(coffee)
-        add(menu, "Install DisplayLink Manager…", #selector(installDisplayLink))
-        add(menu, "Capture Missing Previews (restores minimized windows briefly)", #selector(fillPreviews))
+        menu.addItem(submenu("Coffee Break", breaks, symbol: "cup.and.saucer"))
+        let tools = NSMenu()
+        add(tools, "Battery Health…", #selector(showBattery), symbol: "battery.75percent")
+        add(tools, "Capture Missing Previews", #selector(fillPreviews), symbol: "rectangle.stack")
+        add(tools, "Install DisplayLink Manager…", #selector(installDisplayLink), symbol: "display.2")
+        if health.required { add(tools, "Setup Checklist…", #selector(setup), symbol: "checklist") }
+        menu.addItem(submenu("More Tools", tools, symbol: "wrench.and.screwdriver"))
+
         let experimental = NSMenu()
-        let clips = add(experimental, "Clipboard history (⌥⌘V)", #selector(toggleClipboard))
+        let clips = add(experimental, "Clipboard History (⌥⌘V)", #selector(toggleClipboard))
         clips.state = defaults.bool(forKey: "clipboardEnabled") ? .on : .off
-        if clips.state == .on { add(experimental, "Open Clipboard History…", #selector(showClipboard)) }
-        let clipboardIcon = add(experimental, "Show clipboard menu-bar icon", #selector(toggleClipboardIcon))
+        let on = clips.state == .on
+        if on { add(experimental, "Open Clipboard History…", #selector(showClipboard)).indentationLevel = 1 }
+        let clipboardIcon = add(experimental, "Clipboard Menu-Bar Icon", #selector(toggleClipboardIcon))
         clipboardIcon.state = defaults.bool(forKey: "clipboardIconEnabled") ? .on : .off
-        clipboardIcon.isEnabled = clips.state == .on
-        let screenshots = add(experimental, "Copy screenshots automatically (⌘⇧3 / ⌘⇧4)", #selector(toggleScreenshots))
+        let screenshots = add(experimental, "Auto-Copy Screenshots (⌘⇧3 / ⌘⇧4)", #selector(toggleScreenshots))
         screenshots.state = defaults.bool(forKey: "autoCopyScreenshots") ? .on : .off
-        screenshots.isEnabled = clips.state == .on
-        let timer = add(experimental, "Pomodoro timer", #selector(togglePomodoro))
+        for i in [clipboardIcon, screenshots] { i.isEnabled = on; i.indentationLevel = 1 }
+        experimental.addItem(.separator())
+        let timer = add(experimental, "Pomodoro Timer", #selector(togglePomodoro))
         timer.state = defaults.bool(forKey: "pomodoroEnabled") ? .on : .off
-        let awake = add(experimental, "Keep Mac awake (Caffeinate)", #selector(toggleCaffeinate))
+        let awake = add(experimental, "Keep Mac Awake (Caffeinate)", #selector(toggleCaffeinate))
         awake.state = defaults.bool(forKey: "caffeinateEnabled") ? .on : .off
-        let ai = add(experimental, "Claude / ChatGPT / Gemini / ArtCraft menu-bar icons", #selector(toggleAIIcons))
+        let ai = add(experimental, "AI App Icons (Claude, ChatGPT, Gemini, ArtCraft)", #selector(toggleAIIcons))
         ai.state = defaults.bool(forKey: "aiIconsEnabled") ? .on : .off
-        let group = NSMenuItem(title: "Experimental Features", action: nil, keyEquivalent: "")
-        group.submenu = experimental
-        menu.addItem(group)
+        menu.addItem(submenu("Experimental Features", experimental, symbol: "flask"))
         menu.addItem(.separator())
-        add(menu, sourceDir != nil ? "Update (rebuild from source)" : "Check for Updates…", #selector(update))
+
+        // App
+        add(menu, "Settings…", #selector(settings), key: ",")
+        let login = add(menu, "Launch at Login", #selector(toggleLogin))
+        login.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        add(menu, sourceDir != nil ? "Update (Rebuild from Source)" : "Check for Updates…", #selector(update))
         add(menu, "Restart NirTab", #selector(restart))
+        menu.addItem(.separator())
         add(menu, "Quit NirTab", #selector(quit), key: "q")
     }
 
     @discardableResult
-    func add(_ menu: NSMenu, _ title: String, _ action: Selector, key: String = "") -> NSMenuItem {
+    func add(_ menu: NSMenu, _ title: String, _ action: Selector, key: String = "", symbol: String? = nil) -> NSMenuItem {
         let i = NSMenuItem(title: title, action: action, keyEquivalent: key)
         i.target = self
+        if let symbol { i.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil) }
         menu.addItem(i)
+        return i
+    }
+    func submenu(_ title: String, _ sub: NSMenu, symbol: String? = nil) -> NSMenuItem {
+        let i = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        if let symbol { i.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil) }
+        i.submenu = sub
         return i
     }
 
@@ -2131,8 +2146,8 @@ if CommandLine.arguments.contains("--test-pomodoro-ui") {
     let menu = menuBar.item.menu!
     menuBar.menuNeedsUpdate(menu)
     let options = menu.item(withTitle: "Experimental Features")?.submenu
-    guard options?.item(withTitle: "Clipboard history (⌥⌘V)") != nil,
-          options?.item(withTitle: "Pomodoro timer") != nil else { print("experimental menu FAIL"); exit(1) }
+    guard options?.item(withTitle: "Clipboard History (⌥⌘V)") != nil,
+          options?.item(withTitle: "Pomodoro Timer") != nil else { print("experimental menu FAIL"); exit(1) }
     menuBar.toggleClipboard()
     precondition(defaults.bool(forKey: "clipboardEnabled") && clipboard.timer != nil)
     menuBar.toggleClipboard()
@@ -2148,6 +2163,21 @@ if CommandLine.arguments.contains("--test-pomodoro-ui") {
         exit(ok ? 0 : 1)
     }
 }
+if let i = CommandLine.arguments.firstIndex(of: "--test-docconvert"), i + 1 < CommandLine.arguments.count {
+    // Puts the file on the clipboard like Finder ⌘C, checks the menu, then converts it via "Copy as Markdown".
+    let file = URL(fileURLWithPath: CommandLine.arguments[i + 1])
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.writeObjects([file as NSURL])
+    let menu = menuBar.item.menu!
+    menuBar.menuNeedsUpdate(menu)
+    precondition(menu.item(withTitle: "Convert Copied Document")?.submenu?.item(withTitle: DocConvertMode.copy.title) != nil)
+    convertCopiedDocuments(.copy) { ok in
+        let md = NSPasteboard.general.string(forType: .string) ?? ""
+        print(md.prefix(400))
+        print("docconvert \(ok && !md.isEmpty ? "PASS" : "FAIL")")
+        exit(ok && !md.isEmpty ? 0 : 1)
+    }
+}
 if CommandLine.arguments.contains("--test-rectangle-ui") {
     let menu = menuBar.item.menu!
     menuBar.menuNeedsUpdate(menu)
@@ -2156,12 +2186,13 @@ if CommandLine.arguments.contains("--test-rectangle-ui") {
     precondition(items.count == rectangleActions.count)
     precondition(Set(items.compactMap { $0.representedObject as? String }) == Set(rectangleActions.map(\.0)))
     precondition(menu.item(withTitle: "Capture & Annotate…") != nil)
+    precondition(menu.item(withTitle: "Convert Copied Document")?.submenu?.delegate === docConvertMenu)
     precondition(menu.item(withTitle: "Coffee Break")?.submenu?.item(withTitle: "5-minute coffee break")?.target === coffeeBreak)
-    precondition(menu.item(withTitle: "Battery Health (coconutBattery-style)…")?.action == #selector(MenuBar.showBattery))
-    precondition(menu.item(withTitle: "Install DisplayLink Manager…")?.action == #selector(MenuBar.installDisplayLink))
-    precondition(menu.item(withTitle: "Experimental Features")?.submenu?.item(withTitle: "Show clipboard menu-bar icon") != nil)
+    precondition(menu.item(withTitle: "More Tools")?.submenu?.item(withTitle: "Battery Health…")?.action == #selector(MenuBar.showBattery))
+    precondition(menu.item(withTitle: "More Tools")?.submenu?.item(withTitle: "Install DisplayLink Manager…")?.action == #selector(MenuBar.installDisplayLink))
+    precondition(menu.item(withTitle: "Experimental Features")?.submenu?.item(withTitle: "Clipboard Menu-Bar Icon") != nil)
     precondition(menu.item(withTitle: "Capture Area / Window / Record…") == nil)  // one capture item: Capture & Annotate
-    precondition(menu.item(withTitle: "Experimental Features")?.submenu?.item(withTitle: "Keep Mac awake (Caffeinate)") != nil)
+    precondition(menu.item(withTitle: "Experimental Features")?.submenu?.item(withTitle: "Keep Mac Awake (Caffeinate)") != nil)
     openSettings()
     precondition(settingsWindow?.isVisible == true)
     print("rectangle UI PASS: \(items.count) actions, settings visible")
